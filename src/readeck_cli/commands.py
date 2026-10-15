@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import getpass
 import json
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from readeck_cli.api import Api, CliError, fail
+from readeck_cli.config import (
+    DEFAULT_CONFIG_PATH,
+    clear_settings,
+    read_config_file,
+    resolve_settings,
+    save_settings,
+)
 from readeck_cli.utils import (
     bool_param,
     dump_json,
+    mask_token,
     print_bookmark_table,
     slugify,
     summarize,
@@ -224,6 +234,111 @@ def cmd_mirror(api: Api, base_url: str, args: argparse.Namespace) -> None:
             "added": len(added),
             "skipped": skipped,
             "failed": failed,
+        }
+    )
+
+
+def cmd_auth(args: argparse.Namespace) -> None:
+    """Entry point for the ``auth`` subcommand (runs before configuration is loaded)."""
+    action = args.action or "login"
+    if action == "login":
+        _auth_login(args)
+    elif action == "status":
+        _auth_status(args)
+    else:
+        _auth_logout(args)
+
+
+def _auth_login(args: argparse.Namespace) -> None:
+    stored = read_config_file()
+    url = (args.url or "").strip().rstrip("/")
+    token = (args.token or "").strip()
+
+    if not url or not token:
+        if not sys.stdin.isatty():
+            fail("auth needs a terminal to prompt; pass --url and --token for non-interactive setup", 2)
+        try:
+            if not url:
+                default_url = (
+                    os.environ.get("READECK_URL", "").strip().rstrip("/") or str(stored.get("url") or "").strip()
+                )
+                prompt = f"Readeck URL [{default_url}]: " if default_url else "Readeck URL: "
+                while True:
+                    url = input(prompt).strip() or default_url
+                    if url.startswith(("http://", "https://")):
+                        url = url.rstrip("/")
+                        break
+                    print("Please enter a valid http(s) URL.", file=sys.stderr)
+            if not token:
+                default_token = os.environ.get("READECK_TOKEN", "").strip() or str(stored.get("token") or "").strip()
+                prompt = "API token (Enter to keep the stored one): " if default_token else "API token (input hidden): "
+                entered = getpass.getpass(prompt).strip()
+                token = entered or default_token
+                if not token:
+                    fail("no token provided", 2)
+        except EOFError, KeyboardInterrupt:
+            print(file=sys.stderr)
+            fail("auth cancelled", 130)
+    if not url.startswith(("http://", "https://")):
+        fail(f"invalid Readeck URL {url!r}: must start with http:// or https://", 2)
+
+    path = save_settings(url, token)
+    verified = False
+    instance: Any = None
+    error: str | None = None
+    if not args.no_verify:
+        try:
+            _, instance = Api(url, token, insecure=args.insecure, timeout=args.timeout).json("GET", "/info")
+            verified = True
+        except CliError as exc:
+            error = str(exc)
+            print(f"readeck: warning: credentials saved, but verification failed: {exc}", file=sys.stderr)
+    dump_json(
+        {
+            "config": str(path),
+            "url": url,
+            "token": mask_token(token),
+            "verified": verified,
+            "instance": instance,
+            "error": error,
+        }
+    )
+
+
+def _auth_status(args: argparse.Namespace) -> None:
+    resolved = resolve_settings(args)
+    report: dict[str, Any] = {
+        "configured": resolved.configured,
+        "config_file": str(DEFAULT_CONFIG_PATH),
+        "url": resolved.url or None,
+        "url_source": resolved.url_source or None,
+        "token": mask_token(resolved.token) or None,
+        "token_source": resolved.token_source or None,
+        "reachable": False,
+        "instance": None,
+        "error": None,
+    }
+    if resolved.configured:
+        try:
+            _, instance = Api(resolved.url, resolved.token, insecure=args.insecure, timeout=args.timeout).json(
+                "GET", "/info"
+            )
+            report["reachable"] = True
+            report["instance"] = instance
+        except CliError as exc:
+            report["error"] = str(exc)
+    dump_json(report)
+    if not resolved.configured:
+        raise SystemExit(3)
+
+
+def _auth_logout(args: argparse.Namespace) -> None:
+    removed = clear_settings()
+    dump_json(
+        {
+            "config": str(DEFAULT_CONFIG_PATH),
+            "removed": removed,
+            "note": "READECK_URL/READECK_TOKEN environment variables and --url/--token flags are not affected",
         }
     )
 

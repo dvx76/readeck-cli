@@ -181,12 +181,21 @@ def base_env(stub: Stub, extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def bare_env(config_path) -> dict[str, str]:
+    """Environment without credentials, for tests of auth/config resolution."""
+    env = {k: v for k, v in os.environ.items() if k not in ("READECK_URL", "READECK_TOKEN")}
+    env["READECK_CLI_CONFIG"] = str(config_path)
+    env["PYTHONPATH"] = str(SRC) + os.pathsep + os.environ.get("PYTHONPATH", "")
+    return env
+
+
 def run_cli(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "readeck_cli", *args],
         capture_output=True,
         text=True,
         env=env,
+        stdin=subprocess.DEVNULL,  # deterministic: never a TTY, never a hang
     )
 
 

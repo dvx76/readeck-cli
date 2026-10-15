@@ -7,7 +7,7 @@ import sys
 
 from readeck_cli import __version__
 from readeck_cli.api import Api, CliError
-from readeck_cli.commands import COMMANDS
+from readeck_cli.commands import COMMANDS, cmd_auth
 from readeck_cli.config import load_settings
 
 
@@ -103,15 +103,29 @@ def build_parser() -> argparse.ArgumentParser:
     info = sub.add_parser("info", help="show instance information")
     add_common_args(info)
 
+    auth = sub.add_parser("auth", help="save or inspect Readeck credentials")
+    add_common_args(auth)
+    auth.add_argument(
+        "action",
+        nargs="?",
+        choices=["login", "status", "logout"],
+        default="login",
+        help="login (default): prompt and save; status: show/verify config; logout: delete config file",
+    )
+    auth.add_argument("--no-verify", action="store_true", help="skip the connection check after login")
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     try:
-        settings = load_settings(args)
-        api = Api(settings.url, settings.token, insecure=settings.insecure, timeout=settings.timeout)
-        COMMANDS[args.command](api, settings.url, args)
+        if args.command == "auth":
+            cmd_auth(args)
+        else:
+            settings = load_settings(args)
+            api = Api(settings.url, settings.token, insecure=settings.insecure, timeout=settings.timeout)
+            COMMANDS[args.command](api, settings.url, args)
     except CliError as exc:
         print(f"readeck: {exc}", file=sys.stderr)
         raise SystemExit(exc.code) from exc

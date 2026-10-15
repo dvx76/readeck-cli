@@ -24,10 +24,12 @@ Setup below and stop to tell the user.
 Credentials come from `--url`/`--token` flags, the `READECK_URL`/`READECK_TOKEN` environment
 variables, or `~/.config/readeck/cli.json` (`{"url": "...", "token": "..."}`).
 
-If the CLI exits with code 3, the user has not configured it yet. Tell them to create an API
-token in Readeck under **Settings → API Tokens** with the **read-only scope** (e.g.
-`bookmarks:read`) and save it to `~/.config/readeck/cli.json`. Do not ask for the token in chat
-if they can create the file themselves; if they paste it, write the file with `chmod 600`.
+If the CLI exits with code 3, the user has not configured it yet. Ask them to run `readeck auth`
+in their terminal: it prompts for the instance URL and an API token created in Readeck under
+**Settings → API Tokens** (read-only scope, e.g. `bookmarks:read`). `readeck auth status` shows
+the resolved configuration and verifies the connection. Do not ask for the token in chat if they
+can run `readeck auth` themselves; if they paste one, write `~/.config/readeck/cli.json` and
+`chmod 600` it.
 
 ## Commands
 

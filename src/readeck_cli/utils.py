@@ -78,6 +78,15 @@ def slugify(value: str, maxlen: int = 60) -> str:
     return value[:maxlen].rstrip("-") or "untitled"
 
 
+def mask_token(token: str) -> str:
+    """Mask a token for display: first and last four characters only."""
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "*" * len(token)
+    return f"{token[:4]}…{token[-4:]}"
+
+
 def dump_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
