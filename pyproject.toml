@@ -7,6 +7,8 @@ name = "readeck-cli"
 version = "0.1.0"
 description = "Read-only CLI for a self-hosted Readeck instance, designed for agents"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.14"
 keywords = ["readeck", "read-it-later", "cli", "agents", "mcp"]
 classifiers = [
@@ -22,6 +24,11 @@ dependencies = []
 [project.scripts]
 readeck = "readeck_cli.cli:main"
 readeck-cli = "readeck_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dvx76/readeck-cli"
+Repository = "https://github.com/dvx76/readeck-cli"
+Issues = "https://github.com/dvx76/readeck-cli/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/readeck_cli"]

@@ -48,7 +48,7 @@ Exit codes: `1` API error, `2` usage error, `3` not configured.
 The `skills/readeck/` directory contains an agent skill teaching when and how to use the CLI:
 
 ```sh
-npx skills add <owner>/readeck-cli -g -a opencode -y
+npx skills add dvx76/readeck-cli -g -a opencode -y
 ```
 
 ## Development
@@ -58,3 +58,7 @@ uv sync            # create .venv and install dev dependencies
 uv run pytest      # end-to-end tests against a stub Readeck API
 uv run ruff check  # lint
 ```
+
+## License
+
+[MIT](LICENSE)
