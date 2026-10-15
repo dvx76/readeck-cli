@@ -7,7 +7,7 @@ name = "readeck-cli"
 version = "0.1.0"
 description = "Read-only CLI for a self-hosted Readeck instance, designed for agents"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 keywords = ["readeck", "read-it-later", "cli", "agents", "mcp"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -37,7 +37,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
