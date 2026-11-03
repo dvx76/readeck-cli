@@ -8,10 +8,11 @@ graphics protocol where the terminal supports it (see ``images``).
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sys
-from typing import Any
+from typing import Any, TextIO
 
 from readeck_cli import images
 from readeck_cli.api import Api
@@ -33,6 +34,7 @@ from readeck_cli.pretty import (
     bookmark_head,
     key,
     pad,
+    text_sizing,
     trunc,
     vlen,
 )
@@ -739,19 +741,23 @@ def image_urls(markdown: str) -> list[str]:
     return [u for u in [cover, *walk(body)] if u]
 
 
-def show(markdown: str, bookmark: dict[str, Any], api: Api) -> None:
-    """Print the rendered article to stdout, with inline images when the terminal can draw them."""
-    size = shutil.get_terminal_size((100, 24))
-    t = Term(width=size.columns)
-    t.sizing = Term().sizing
+def show(markdown: str, bookmark: dict[str, Any], api: Api, stream: TextIO | None = None) -> None:
+    """Print the rendered article (to stdout by default), with inline images when the terminal
+    can draw them."""
+    stream = stream or sys.stdout
+    fd = stream.fileno()
+    tty = os.isatty(fd)
+    size = os.get_terminal_size(fd) if tty else shutil.get_terminal_size((100, 24))
+    t = Term(width=size.columns, color=None if stream is sys.stdout else tty)
+    t.sizing = t.color and tty and text_sizing()
     loader = None
     cell = (10.0, 20.0)
-    if t.color and images.graphics_supported():
-        cell = images.cell_size()
+    if t.color and images.graphics_supported(fd):
+        cell = images.cell_size(fd)
         loader = images.Loader(api.media, image_urls(markdown), round((size.columns - 4) * cell[0]))
     try:
-        sys.stdout.write("\n".join(render(markdown, bookmark, t, loader, cell, size.lines)) + "\n")
-        sys.stdout.flush()
+        stream.write("\n".join(render(markdown, bookmark, t, loader, cell, size.lines)) + "\n")
+        stream.flush()
     finally:
         if loader:
             loader.close()

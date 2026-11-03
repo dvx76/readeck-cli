@@ -33,16 +33,29 @@ LABEL_COLORS = (BLUE, MAUVE, GREEN, PEACH, TEAL, PINK, YELLOW, RED)
 ANSI_RX = re.compile(r"\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x1b]*\x1b\\")
 
 
+def in_multiplexer() -> bool:
+    """tmux or screen: they swallow kitty graphics and text-sizing escapes."""
+    return bool(os.environ.get("TMUX") or os.environ.get("STY")) or os.environ.get("TERM", "").startswith(
+        ("screen", "tmux")
+    )
+
+
 def kitty_like() -> bool:
-    """kitty, Ghostty or WezTerm outside a multiplexer: they draw powerline caps natively."""
-    if os.environ.get("TMUX") or os.environ.get("TERM", "").startswith(("screen", "tmux")):
+    """A terminal known to implement the kitty graphics protocol and draw powerline caps natively:
+    kitty, Ghostty, WezTerm or Rex (libghostty), outside tmux/screen."""
+    if in_multiplexer():
         return False
     return (
-        os.environ.get("TERM") in ("xterm-kitty", "xterm-ghostty")
+        os.environ.get("TERM") in ("xterm-kitty", "xterm-ghostty", "xterm-rex")
         or "KITTY_WINDOW_ID" in os.environ
         or "GHOSTTY_RESOURCES_DIR" in os.environ
-        or os.environ.get("TERM_PROGRAM", "").lower() in ("ghostty", "wezterm")
+        or os.environ.get("TERM_PROGRAM", "").lower() in ("ghostty", "wezterm", "rex")
     )
+
+
+def text_sizing() -> bool:
+    """kitty's text-sizing protocol (OSC 66, large titles) is only implemented by kitty itself."""
+    return not in_multiplexer() and (os.environ.get("TERM") == "xterm-kitty" or "KITTY_WINDOW_ID" in os.environ)
 
 
 class Term:
@@ -65,13 +78,7 @@ class Term:
         self.truecolor = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
         self.width = max(60, min(shutil.get_terminal_size((100, 24)).columns, 120)) if width is None else max(40, width)
         self.rounded = self.color and kitty_like()
-        self.sizing = (
-            self.color
-            and width is None
-            and sys.stdout.isatty()
-            and not os.environ.get("TMUX")
-            and (os.environ.get("TERM") == "xterm-kitty" or "KITTY_WINDOW_ID" in os.environ)
-        )
+        self.sizing = self.color and width is None and sys.stdout.isatty() and text_sizing()
 
     def rgb(self, hexcolor: str, layer: int) -> str:
         r, g, b = (int(hexcolor[i : i + 2], 16) for i in (1, 3, 5))

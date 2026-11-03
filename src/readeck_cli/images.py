@@ -1,6 +1,6 @@
 """Inline images for the ``read`` view (stdlib only).
 
-Kitty's graphics protocol (kitty, Ghostty, WezTerm) takes PNG files or raw pixels. Readeck stores
+Kitty's graphics protocol (kitty, Ghostty, WezTerm, Rex) takes PNG files or raw pixels. Readeck stores
 article images as PNG, JPEG or (animated) GIF, so PNG goes to the terminal unchanged and JPEG/GIF
 are decoded here, downscaled to the size they are shown at, and sent as raw RGB(A).
 """
@@ -8,17 +8,20 @@ are decoded here, downscaled to the size they are shown at, and sent as raw RGB(
 from __future__ import annotations
 
 import base64
+import functools
 import math
 import os
 import re
 import struct
-import sys
+import time
 import zlib
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from itertools import compress
 from operator import add
+
+from readeck_cli.pretty import in_multiplexer, kitty_like
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -28,35 +31,76 @@ class ImageError(ValueError):
 
 
 # ------------------------------------------------------------------ detection
-def graphics_supported() -> bool:
-    """Whether stdout is a terminal known to draw kitty graphics (``READECK_IMAGES=0/1`` overrides)."""
+def graphics_supported(fd: int) -> bool:
+    """Whether the terminal on ``fd`` draws kitty graphics (``READECK_IMAGES=0/1`` overrides).
+
+    Known terminals are recognized from their environment; any other terminal is asked directly.
+    """
     setting = os.environ.get("READECK_IMAGES", "").lower()
     if setting in ("0", "no", "off", "false"):
         return False
     if setting in ("1", "yes", "on", "true"):
         return True
-    if os.environ.get("TMUX") or os.environ.get("STY") or os.environ.get("TERM", "").startswith(("screen", "tmux")):
-        return False  # multiplexers swallow the escapes
-    return sys.stdout.isatty() and (
-        os.environ.get("TERM") in ("xterm-kitty", "xterm-ghostty")
-        or "KITTY_WINDOW_ID" in os.environ
-        or "GHOSTTY_RESOURCES_DIR" in os.environ
-        or os.environ.get("TERM_PROGRAM", "").lower() in ("ghostty", "wezterm")
-    )
+    if in_multiplexer() or not os.isatty(fd):
+        return False
+    return kitty_like() or query_terminal()[0]
 
 
-def cell_size() -> tuple[float, float]:
-    """Pixel size of one terminal cell (kitty, Ghostty and WezTerm report it via TIOCGWINSZ)."""
+def cell_size(fd: int) -> tuple[float, float]:
+    """Pixel size of one terminal cell: from the window size ioctl, else asked of the terminal."""
     try:
         import fcntl
         import termios
 
-        rows, cols, xpx, ypx = struct.unpack("HHHH", fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8))
+        rows, cols, xpx, ypx = struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
         if rows and cols and xpx and ypx:
             return xpx / cols, ypx / rows
     except ImportError, OSError, ValueError:
         pass
-    return 10.0, 20.0
+    return query_terminal()[1] or (10.0, 20.0)
+
+
+@functools.cache
+def query_terminal(timeout: float = 0.5) -> tuple[bool, tuple[float, float] | None]:
+    """Ask the controlling terminal whether it supports kitty graphics and how big its cells are.
+
+    Sends a kitty graphics query (a 1x1 image that is checked, not stored), a cell size request
+    (CSI 16 t) and a primary device attributes request (CSI c). Every terminal answers the last
+    one, and in order, so its reply ends the wait without a timeout on terminals that ignore the
+    first two.
+    """
+    try:
+        import select
+        import termios
+        import tty
+
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except ImportError, OSError:
+        return False, None
+    reply = b""
+    try:
+        saved = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd, termios.TCSANOW)  # no echo of the replies
+            os.write(fd, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c")
+            deadline = time.monotonic() + timeout
+            while not _DA1_RX.search(reply):
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    break
+                reply += os.read(fd, 1024)
+        finally:
+            termios.tcsetattr(fd, termios.TCSANOW, saved)
+    except OSError, termios.error:
+        pass
+    finally:
+        os.close(fd)
+    cell = _CELL_RX.search(reply)
+    return b"\x1b_Gi=31;OK" in reply, (int(cell[2]), int(cell[1])) if cell and int(cell[1]) and int(cell[2]) else None
+
+
+_DA1_RX = re.compile(rb"\x1b\[\?[\d;]*c")
+_CELL_RX = re.compile(rb"\x1b\[6;(\d+);(\d+)t")
 
 
 def size(data: bytes) -> tuple[int, int] | None:

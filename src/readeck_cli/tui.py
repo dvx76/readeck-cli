@@ -14,7 +14,7 @@ import sys
 import webbrowser
 from typing import Any
 
-from readeck_cli import pretty, reader
+from readeck_cli import images, pretty, reader
 from readeck_cli.api import Api, CliError
 
 try:
@@ -224,6 +224,20 @@ def browse(bookmarks: list[dict[str, Any]], total: int, filters: str, api: Api) 
         write("\x1b[?25h\x1b[?1049l")
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
+    def read(markdown: str, bookmark: dict[str, Any]) -> None:
+        """Show an article like ``readeck read``: printed on the main screen with its images, back
+        to the picker on a key. Terminals without inline images get it in $PAGER instead."""
+        if images.graphics_supported(out):
+            with os.fdopen(os.dup(out), "w", encoding="utf-8") as stream:
+                reader.show(markdown, bookmark, api, stream)
+            write("\n " + pretty.Term(color=True).s("↩ any key: back to browse", pretty.MUTED) + "\x1b[?25l")
+            tty.setcbreak(fd, termios.TCSANOW)
+            os.read(fd, 4096)
+            return
+        view = reader.render(markdown, bookmark, pretty.Term(width=os.get_terminal_size(out).columns, color=True))
+        pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less") else "more")
+        subprocess.run(pager, shell=True, input="\n".join(view).encode(), stdout=out, check=False)
+
     try:
         enter()
         size = None
@@ -241,18 +255,12 @@ def browse(bookmarks: list[dict[str, Any]], total: int, filters: str, api: Api) 
                 if action == "quit":
                     return None
                 if action in ("read", "open"):
-                    leave()  # the pager, or a console browser, takes over the terminal meanwhile
+                    leave()  # the article, or a console browser, takes over the terminal meanwhile
                     try:
                         if action == "read":
                             path = f"/bookmarks/{app.current()['id']}/article.md"
                             _, body = api.request("GET", path, accept="text/markdown")
-                            view = reader.render(
-                                body.decode("utf-8", "replace"),
-                                app.current(),
-                                pretty.Term(width=size.columns, color=True),
-                            )
-                            pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less") else "more")
-                            subprocess.run(pager, shell=True, input="\n".join(view).encode(), stdout=out, check=False)
+                            read(body.decode("utf-8", "replace"), app.current())
                         else:
                             url = app.current().get("url", "")
                             app.message = f"opened {url}" if url and webbrowser.open(url) else "no browser available"

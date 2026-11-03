@@ -47,8 +47,9 @@ Output: on a terminal every command prints a colored, human-friendly view; when 
 or redirected it prints JSON (for agents and `jq`). Force either with `-o pretty` or `-o json`.
 Colors honor `NO_COLOR` and `FORCE_COLOR`.
 
-`read` draws article images inline in kitty, Ghostty and WezTerm (kitty graphics protocol;
-PNG, JPEG and GIF are decoded by the CLI itself, no extra tools needed). On wide terminals a
+`read` (and `browse`'s ^R) draws article images inline in kitty, Ghostty, WezTerm, Rex, and any
+other terminal that answers the kitty graphics protocol's support query. PNG, JPEG and GIF are
+decoded by the CLI itself, no extra tools needed. On wide terminals a
 margin column holds your note, the table of contents, captions and link references. Set
 `READECK_IMAGES=0` to turn images off, or `READECK_IMAGES=1` to force them on.
 

@@ -29,3 +29,33 @@ def test_decode_jpeg_downscales_for_display():
 def test_decode_interlaced_gif_matches_reference():
     data = (DATA / "interlaced.gif").read_bytes()
     assert images.decode_gif(data) == (40, 23, (DATA / "interlaced.gif.rgba").read_bytes())
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (b"\x1b_Gi=31;OK\x1b\\\x1b[6;20;9t\x1b[?62;4c", (True, (9, 20))),  # kitty-like terminal
+        (b"\x1b[?62;22c", (False, None)),  # answers device attributes only: no graphics
+    ],
+)
+def test_query_terminal_reads_the_terminal_reply(reply, expected):
+    import os
+    import pty
+    import subprocess
+    import sys
+
+    primary, replica = pty.openpty()
+    child = (  # make the pty its controlling terminal (/dev/tty), then ask it
+        "import fcntl, os, termios; os.setsid(); fcntl.ioctl(0, termios.TIOCSCTTY, 0)\n"
+        "from readeck_cli import images; print(repr(images.query_terminal()))"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", child], stdin=replica, stdout=subprocess.PIPE, env=os.environ)
+    os.close(replica)
+    sent = b""
+    while b"\x1b[c" not in sent:
+        sent += os.read(primary, 1024)
+    assert b"a=q" in sent  # asked about kitty graphics
+    os.write(primary, reply)
+    out, _ = proc.communicate(timeout=10)
+    os.close(primary)
+    assert out.decode().strip() == repr(expected)
