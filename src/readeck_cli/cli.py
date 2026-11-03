@@ -74,6 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--all", action="store_true", help="fetch all matching pages (up to --max)")
     search.add_argument("--max", type=int, default=500, help="cap for --all (default 500)")
 
+    browse = sub.add_parser(
+        "browse",
+        help="pick a bookmark interactively (arrow keys, type to filter, live preview)",
+        description="Browse matching bookmarks in a full-screen picker; Enter prints the selected bookmark.",
+    )
+    add_common_args(browse)
+    add_filter_args(browse)
+    browse.add_argument("--max", type=int, default=500, help="maximum number of bookmarks to load (default 500)")
+
     show = sub.add_parser("show", help="show one bookmark's metadata")
     add_common_args(show)
     show.add_argument("id")

@@ -33,19 +33,24 @@ ANSI_RX = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\")
 
 
 class Term:
-    """Styling for stdout: colors only on a terminal, honoring NO_COLOR and FORCE_COLOR."""
+    """Styling for stdout: colors only on a terminal, honoring NO_COLOR and FORCE_COLOR.
 
-    def __init__(self) -> None:
-        if os.environ.get("NO_COLOR"):
+    ``width`` and ``color`` override detection (used by the ``browse`` panes).
+    """
+
+    def __init__(self, width: int | None = None, color: bool | None = None) -> None:
+        if color is not None:
+            self.color = color and not os.environ.get("NO_COLOR")
+        elif os.environ.get("NO_COLOR"):
             self.color = False
         elif os.environ.get("FORCE_COLOR"):
             self.color = True
         else:
             self.color = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
         self.truecolor = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
-        self.width = max(60, min(shutil.get_terminal_size((100, 24)).columns, 120))
+        self.width = max(60, min(shutil.get_terminal_size((100, 24)).columns, 120)) if width is None else max(40, width)
 
-    def _rgb(self, hexcolor: str, layer: int) -> str:
+    def rgb(self, hexcolor: str, layer: int) -> str:
         r, g, b = (int(hexcolor[i : i + 2], 16) for i in (1, 3, 5))
         if self.truecolor:
             return f"{layer};2;{r};{g};{b}"
@@ -64,9 +69,9 @@ class Term:
         text = str(text)
         if not self.color or not text:
             return text
-        codes = [self._rgb(fg, 38)] if fg else []
+        codes = [self.rgb(fg, 38)] if fg else []
         if bg:
-            codes.append(self._rgb(bg, 48))
+            codes.append(self.rgb(bg, 48))
         codes += [c for c, on in (("1", bold), ("3", italic), ("4", underline)) if on]
         return f"\x1b[{';'.join(codes)}m{text}\x1b[0m" if codes else text
 
@@ -96,6 +101,23 @@ def trunc(text: str, width: int) -> str:
             break
         out, used = out + char, used + cell
     return out.rstrip() + "…"
+
+
+def clip(text: str, width: int) -> str:
+    """Cut styled text to ``width`` cells, keeping escape sequences intact."""
+    out, used, pos = [], 0, 0
+    for match in [*ANSI_RX.finditer(text), None]:
+        end = match.start() if match else len(text)
+        for char in text[pos:end]:
+            cell = vlen(char)
+            if used + cell > width:
+                return "".join(out) + "\x1b[0m"
+            out.append(char)
+            used += cell
+        if match:
+            out.append(match.group())
+            pos = match.end()
+    return "".join(out)
 
 
 def wrap(text: str, width: int) -> list[str]:
@@ -179,7 +201,10 @@ def rule(t: Term) -> str:
 # ------------------------------------------------------------------- bookmarks
 def bookmark(data: dict[str, Any]) -> None:
     """Detail view for ``show``: a header bar, then aligned metadata rows."""
-    t = Term()
+    print("\n".join(bookmark_lines(data, Term())))
+
+
+def bookmark_lines(data: dict[str, Any], t: Term) -> list[str]:
     w = t.width
     title = data.get("title") or "(untitled)"
     kind = f" {(data.get('type') or 'article').upper()} "
@@ -234,7 +259,7 @@ def bookmark(data: dict[str, Any]) -> None:
     if data.get("readeck_url"):
         lines.append(key(t, "Readeck") + t.link(t.s(data["readeck_url"], MAUVE, underline=True), data["readeck_url"]))
     lines.append(key(t, "ID") + t.s(data.get("id", ""), SUB))
-    print("\n".join(lines))
+    return lines
 
 
 def date_group(created: str | None) -> str:
@@ -245,6 +270,28 @@ def date_group(created: str | None) -> str:
         if days < limit:
             return name
     return "Older"
+
+
+def bookmark_row(t: Term, item: dict[str, Any], title_w: int) -> str:
+    """One result row: status, favorite, title, type, site, reading time, age (title_w + 33 cells)."""
+    archived = bool(item.get("is_archived"))
+    title = trunc(item.get("title") or "(untitled)", title_w)
+    site = trunc(item.get("site_name") or item.get("site") or "", 13)
+    minutes = f"{item['reading_time']}m" if item.get("reading_time") else ""
+    return (
+        status_icon(t, item)
+        + " "
+        + (t.s("★", YELLOW) if item.get("is_marked") else " ")
+        + " "
+        + pad(t.s(title, MUTED if archived else TEXT, bold=not archived), title_w)
+        + " "
+        + type_icon(t, item)
+        + " "
+        + pad(t.s(site, MAUVE), 14)
+        + t.s(f"{minutes:>5}", SUB)
+        + "  "
+        + t.s(f"{ago(item.get('created'), short=True):>5}", MUTED)
+    )
 
 
 def bookmark_list(bookmarks: list[dict[str, Any]], total: int, offset: int, filters: str, grouped: bool) -> None:
@@ -264,25 +311,7 @@ def bookmark_list(bookmarks: list[dict[str, Any]], total: int, offset: int, filt
         if grouped and date_group(item.get("created")) != group:
             group = date_group(item.get("created"))
             lines.append("  " + t.s(group, MAUVE, bold=True) + " " + t.s("─" * (w - 5 - len(group)), FAINT))
-        archived = bool(item.get("is_archived"))
-        title = trunc(item.get("title") or "(untitled)", title_w)
-        site = trunc(item.get("site_name") or item.get("site") or "", 13)
-        minutes = f"{item['reading_time']}m" if item.get("reading_time") else ""
-        lines.append(
-            "  "
-            + status_icon(t, item)
-            + " "
-            + (t.s("★", YELLOW) if item.get("is_marked") else " ")
-            + " "
-            + pad(t.s(title, MUTED if archived else TEXT, bold=not archived), title_w)
-            + " "
-            + type_icon(t, item)
-            + " "
-            + pad(t.s(site, MAUVE), 14)
-            + t.s(f"{minutes:>5}", SUB)
-            + "  "
-            + t.s(f"{ago(item.get('created'), short=True):>5}", MUTED)
-        )
+        lines.append("  " + bookmark_row(t, item, title_w))
         ident = t.s(item.get("id", ""), FAINT)
         if item.get("readeck_url"):
             ident = t.link(ident, item["readeck_url"])

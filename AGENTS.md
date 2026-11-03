@@ -23,7 +23,8 @@ uv run ruff format    # format
 - Python 3.14+, **stdlib only at runtime** (no dependencies in `[project].dependencies`).
 - Layout: `cli.py` (argument parsing/dispatch), `commands.py` (behavior), `api.py` (HTTP),
   `config.py` (credential resolution), `utils.py` (JSON shaping and helpers), `pretty.py`
-  (terminal rendering for `-o pretty`). Add new commands in
+  (terminal rendering for `-o pretty`), `tui.py` (the interactive `browse` picker, raw
+  termios, POSIX only). Add new commands in
   `commands.py`, register them in `COMMANDS`, define their arguments in `cli.py`, and print
   results with `emit(args, payload, pretty.<renderer>)` so both output formats stay available.
 - Exit codes: `1` API error, `2` usage error, `3` configuration error. Keep this contract

@@ -30,6 +30,7 @@ variables or `--url`/`--token` flags override the config file.
 
 ```sh
 readeck search -q "linux kernel" --since 6m       # colored view on a terminal, JSON when piped
+readeck browse --since 6m                         # interactive picker: type to filter, live preview
 readeck read <ID>                                 # article as Markdown (--out FILE to save)
 readeck highlights [<ID>]                         # highlighted passages
 readeck labels                                    # labels with counts

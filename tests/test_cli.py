@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import pty
+import select
+import struct
 import subprocess
 import sys
+import termios
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from conftest import ARTICLE_MD, BM1, TOKEN, base_env, run_cli
@@ -72,6 +77,53 @@ def test_output_defaults_to_pretty_on_a_terminal(stub):
     assert "ARTICLE" in out
     assert "Read later" in out
     assert f"{stub.url}/bookmarks/bm1" in out
+
+
+def browse_in_terminal(stub, keys: bytes) -> subprocess.CompletedProcess:
+    """Run `browse` with a pseudo-terminal as stdin (the UI draws there) and stdout piped."""
+    primary, replica = pty.openpty()
+    fcntl.ioctl(replica, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 140, 0, 0))
+    cmd = [sys.executable, "-m", "readeck_cli", "browse"]
+    proc = subprocess.Popen(cmd, stdin=replica, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=base_env(stub))
+    os.close(replica)
+    screen = b""
+    deadline = time.monotonic() + 10
+    while b"esc quit" not in screen and time.monotonic() < deadline:  # wait for the first frame
+        if select.select([primary], [], [], 0.1)[0]:
+            screen += os.read(primary, 65536)
+    os.write(primary, keys)
+
+    def drain():  # keep reading frames so the UI never blocks on a full terminal buffer
+        while proc.poll() is None:
+            if select.select([primary], [], [], 0.05)[0]:
+                try:
+                    os.read(primary, 65536)
+                except OSError:
+                    return
+
+    drain = threading.Thread(target=drain)
+    drain.start()
+    out, err = proc.communicate(timeout=10)
+    drain.join()
+    os.close(primary)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out.decode(), err.decode())
+
+
+def test_browse_filter_and_arrows_select_a_bookmark(stub):
+    filtered = browse_in_terminal(stub, b"security\r")
+    assert filtered.returncode == 0, filtered.stderr
+    assert json.loads(filtered.stdout)["id"] == "bm2"  # piped stdout gets JSON
+    moved = browse_in_terminal(stub, b"\x1b[B\r")
+    assert json.loads(moved.stdout)["id"] == "bm2"
+    cancelled = browse_in_terminal(stub, b"\x1b")
+    assert (cancelled.returncode, cancelled.stdout) == (130, "")
+
+
+def test_browse_without_terminal_exits_2(run, stub):
+    proc = run("browse", expect_ok=False)
+    assert proc.returncode == 2
+    assert "interactive terminal" in proc.stderr
+    assert stub.queries == []  # fails before fetching
 
 
 def test_show_keeps_metadata(run):

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from readeck_cli import pretty
+from readeck_cli import pretty, tui
 from readeck_cli.api import Api, CliError, fail
 from readeck_cli.config import (
     DEFAULT_CONFIG_PATH,
@@ -123,6 +123,15 @@ def cmd_search(api: Api, base_url: str, args: argparse.Namespace) -> None:
         payload,
         lambda p: pretty.bookmark_list(p["bookmarks"], total, args.offset, describe_filters(args), by_created),
     )
+
+
+def cmd_browse(api: Api, base_url: str, args: argparse.Namespace) -> None:
+    tui.ensure_terminal()  # fail before fetching anything
+    bookmarks, total = fetch_all(api, args, args.max)
+    chosen = tui.browse([summarize(b, base_url) for b in bookmarks], total, describe_filters(args), api)
+    if chosen is None:
+        raise SystemExit(130)
+    emit(args, chosen, pretty.bookmark)
 
 
 def cmd_show(api: Api, base_url: str, args: argparse.Namespace) -> None:
@@ -345,6 +354,7 @@ def _auth_logout(args: argparse.Namespace) -> None:
 
 COMMANDS: dict[str, Callable[[Api, str, argparse.Namespace], None]] = {
     "search": cmd_search,
+    "browse": cmd_browse,
     "show": cmd_show,
     "read": cmd_read,
     "highlights": cmd_highlights,

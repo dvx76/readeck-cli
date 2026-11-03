@@ -78,6 +78,8 @@ Search filters (all combinable, AND semantics): `-q`, `--since`/`--until` (accep
 
 ## Notes
 
+- `readeck browse` is an interactive full-screen picker for humans; never run it (it needs a
+  terminal and exits 2 without one). Use `search` instead.
 - Read-only: the CLI cannot save, edit, archive, or delete bookmarks. If the user asks for that,
   say so and suggest the Readeck web UI (or a write-scoped tool).
 - `created` is when the user saved the article; `published` is the original publication date and
