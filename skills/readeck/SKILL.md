@@ -8,11 +8,11 @@ description: Search and read articles saved in the user's self-hosted Readeck re
 The user keeps articles in a self-hosted [Readeck](https://readeck.org) instance. Use the
 `readeck` command to search, read, and quote from it.
 
-If `readeck` is not on PATH, either install it (`uv tool install readeck-cli`) — ask the user
-first — or run it through uv without installing:
+If `readeck` is not on PATH, either install it (`uv tool install git+https://github.com/dvx76/readeck-cli`)
+— ask the user first — or run it through uv without installing (it is not on PyPI):
 
 ```sh
-uvx --from readeck-cli readeck <command> [options]
+uvx --from git+https://github.com/dvx76/readeck-cli readeck <command> [options]
 ```
 
 All output of `search`/`show`/`highlights`/`labels`/`collections` is JSON by default (made for
