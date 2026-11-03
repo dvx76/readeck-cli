@@ -7,8 +7,9 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -103,12 +104,20 @@ def make_handler(stub: Stub) -> type[BaseHTTPRequestHandler]:
             path, query = parsed.path, parse_qs(parsed.query)
             stub.queries.append(self.path)
             if path == "/api/bookmarks":
-                total = 0 if query.get("search", ["x"])[0] == "nothing" else 2
+                search = query.get("search", ["x"])[0]
+                if search == "slow":  # mirror run where one article read times out
+                    return self._send(200, [BM1, BM1 | {"id": "slow"}], {"Total-Count": "2"})
+                total = 0 if search == "nothing" else 2
                 return self._send(200, [BM1, BM2] if total else [], {"Total-Count": str(total)})
             if path == "/api/bookmarks/bm1":
                 return self._send(200, BM1 | {"note": "Read later", "resources": {}})
             if path == "/api/bookmarks/bm1/article.md":
                 return self._send(200, raw=ARTICLE_MD)
+            if path == "/api/bookmarks/slow/article.md":
+                self.send_response(200)
+                self.end_headers()
+                time.sleep(1)  # headers sent, body stalls: the client times out in resp.read()
+                return
             if path == "/api/bookmarks/bm2/article.md":
                 return self._send(404, {"error": "no article"})
             if path == "/api/bookmarks/labels":
@@ -161,7 +170,7 @@ def make_handler(stub: Stub) -> type[BaseHTTPRequestHandler]:
 @pytest.fixture(scope="session")
 def stub():
     stub = Stub()
-    server = HTTPServer(("127.0.0.1", 0), make_handler(stub))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(stub))
     stub.url = f"http://127.0.0.1:{server.server_port}"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
