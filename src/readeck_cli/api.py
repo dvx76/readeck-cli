@@ -100,6 +100,18 @@ class Api:
         except (OSError, http.client.HTTPException) as exc:  # connection reset, incomplete read, ...
             raise CliError(f"network error for {method} {path}: {type(exc).__name__}: {exc}") from exc
 
+    def media(self, url: str) -> bytes | None:
+        """Fetch a bookmark resource (article image) or None. Readeck serves them publicly under
+        ``/bm/``, so no token is sent, and only URLs on the Readeck instance itself are fetched."""
+        if _origin(url) != _origin(self.base):
+            return None
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with self.opener.open(req, timeout=self.timeout) as resp:
+                return resp.read(32 << 20)
+        except CliError, OSError, http.client.HTTPException, ValueError:
+            return None
+
     def _timeout_error(self, method: str, path: str) -> CliError:
         return CliError(f"timed out after {self.timeout:g}s for {method} {path} (raise it with --timeout SECONDS)")
 

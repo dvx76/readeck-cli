@@ -87,10 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(show)
     show.add_argument("id")
 
-    read = sub.add_parser("read", help="print a bookmark's article as Markdown")
+    read = sub.add_parser(
+        "read",
+        help="read a bookmark's article (rendered on a terminal, Markdown when piped)",
+        description="Print a bookmark's article: rendered with inline images on a terminal, "
+        "the Markdown source when stdout is piped, with --raw, or with -o json.",
+    )
     add_common_args(read)
     read.add_argument("id")
     read.add_argument("--out", help="write Markdown to this file instead of stdout")
+    read.add_argument("--raw", action="store_true", help="print the Markdown source even on a terminal")
 
     highlights = sub.add_parser("highlights", help="list highlights, for the whole library or one bookmark")
     add_common_args(highlights)

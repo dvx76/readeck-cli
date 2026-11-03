@@ -60,7 +60,9 @@ BM2 = {
 }
 ARTICLE_MD = (
     "---\ntitle: The Linux Kernel Documentation\nsource: https://www.kernel.org/doc/html/latest/\n---\n\n"
-    "# The Linux Kernel Documentation\n\nText with ==a highlighted passage== and more.\n"
+    "# The Linux Kernel Documentation\n\nText with ==a highlighted passage== and more.\n\n"
+    "![The boot sequence](https://readeck.example/bm/ab/abc/img/boot.png)\n\n## Building\n\n"
+    "```sh\nmake -j8  # build\n```\n"
 )
 
 

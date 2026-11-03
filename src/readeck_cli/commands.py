@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from readeck_cli import pretty, tui
+from readeck_cli import pretty, reader, tui
 from readeck_cli.api import Api, CliError, fail
 from readeck_cli.config import (
     DEFAULT_CONFIG_PATH,
@@ -153,6 +153,9 @@ def cmd_read(api: Api, base_url: str, args: argparse.Namespace) -> None:
             "readeck_url": f"{base_url}/bookmarks/{args.id}",
         }
         emit(args, receipt, pretty.record)
+    elif args.output == "pretty" and not args.raw:
+        _, data = api.json("GET", f"/bookmarks/{args.id}")
+        reader.show(text, summarize(data, base_url), api)
     else:
         sys.stdout.write(text)
         if text and not text.endswith("\n"):

@@ -31,7 +31,8 @@ variables or `--url`/`--token` flags override the config file.
 ```sh
 readeck search -q "linux kernel" --since 6m       # colored view on a terminal, JSON when piped
 readeck browse --since 6m                         # interactive picker: type to filter, live preview
-readeck read <ID>                                 # article as Markdown (--out FILE to save)
+readeck read <ID>                                 # rendered article on a terminal, Markdown when piped
+readeck read <ID> --raw                           # Markdown source even on a terminal (--out FILE to save)
 readeck highlights [<ID>]                         # highlighted passages
 readeck labels                                    # labels with counts
 readeck mirror --since 6m --dir DIR               # incremental Markdown export
@@ -45,6 +46,11 @@ Search filters: `--since`/`--until` (`6m`, `30d`, `2w`, `1y`, or dates), `--titl
 Output: on a terminal every command prints a colored, human-friendly view; when stdout is piped
 or redirected it prints JSON (for agents and `jq`). Force either with `-o pretty` or `-o json`.
 Colors honor `NO_COLOR` and `FORCE_COLOR`.
+
+`read` draws article images inline in kitty, Ghostty and WezTerm (kitty graphics protocol;
+PNG, JPEG and GIF are decoded by the CLI itself, no extra tools needed). On wide terminals a
+margin column holds your note, the table of contents, captions and link references. Set
+`READECK_IMAGES=0` to turn images off, or `READECK_IMAGES=1` to force them on.
 
 Exit codes: `1` API error, `2` usage error, `3` not configured.
 

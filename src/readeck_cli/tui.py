@@ -14,7 +14,7 @@ import sys
 import webbrowser
 from typing import Any
 
-from readeck_cli import pretty
+from readeck_cli import pretty, reader
 from readeck_cli.api import Api, CliError
 
 try:
@@ -246,8 +246,13 @@ def browse(bookmarks: list[dict[str, Any]], total: int, filters: str, api: Api) 
                         if action == "read":
                             path = f"/bookmarks/{app.current()['id']}/article.md"
                             _, body = api.request("GET", path, accept="text/markdown")
+                            view = reader.render(
+                                body.decode("utf-8", "replace"),
+                                app.current(),
+                                pretty.Term(width=size.columns, color=True),
+                            )
                             pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less") else "more")
-                            subprocess.run(pager, shell=True, input=body, stdout=out, check=False)
+                            subprocess.run(pager, shell=True, input="\n".join(view).encode(), stdout=out, check=False)
                         else:
                             url = app.current().get("url", "")
                             app.message = f"opened {url}" if url and webbrowser.open(url) else "no browser available"

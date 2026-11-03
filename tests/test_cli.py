@@ -248,3 +248,14 @@ def test_cross_origin_redirect_does_not_leak_token(run, stub):
     assert proc.returncode == 1
     assert f"different origin: {stub.url}/api/info" in proc.stderr
     assert TOKEN not in proc.stderr
+
+
+def test_read_pretty_renders_article(run):
+    out = run("read", "bm1", "-o", "pretty").stdout
+    assert "\x1b[" not in out  # piped: no colors, no inline images
+    assert "The Linux Kernel Documentation" in out
+    assert "a highlighted passage" in out and "==" not in out
+    assert "Figure 1 · open ↗" in out and "The boot sequence" in out  # image without graphics support
+    assert "1 Building" in out
+    assert "make -j8  # build" in out and "```" not in out
+    assert run("read", "bm1", "-o", "pretty", "--raw").stdout == ARTICLE_MD

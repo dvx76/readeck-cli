@@ -41,7 +41,7 @@ readeck search -q "linux kernel" --since 6m -o json  # full-text search
 readeck search --labels security --read-status unread --sort -created
 readeck search -q "rust" --all                    # fetch every match (up to --max, default 500)
 readeck show <ID>                                 # one bookmark's metadata
-readeck read <ID>                                 # article as Markdown on stdout
+readeck read <ID> -o json                         # article as Markdown on stdout (see note below)
 readeck read <ID> --out /path/file.md             # save instead of printing
 readeck highlights [<ID>]                         # the user's highlighted passages
 readeck labels                                    # labels with counts
@@ -78,6 +78,8 @@ Search filters (all combinable, AND semantics): `-q`, `--since`/`--until` (accep
 
 ## Notes
 
+- `read` prints raw Markdown whenever stdout is not a terminal or with `-o json`/`--raw`; on a
+  terminal it renders the article for humans (colors, inline images), which is not what you want.
 - `readeck browse` is an interactive full-screen picker for humans; never run it (it needs a
   terminal and exits 2 without one). Use `search` instead.
 - Read-only: the CLI cannot save, edit, archive, or delete bookmarks. If the user asks for that,

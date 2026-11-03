@@ -29,13 +29,28 @@ SURFACE = "#313244"
 BASE = "#1e1e2e"
 LABEL_COLORS = (BLUE, MAUVE, GREEN, PEACH, TEAL, PINK, YELLOW, RED)
 
-ANSI_RX = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\")
+# SGR, OSC (hyperlinks, text sizing) and APC (kitty graphics) sequences: zero width on screen.
+ANSI_RX = re.compile(r"\x1b\[[0-9;:]*m|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x1b]*\x1b\\")
+
+
+def kitty_like() -> bool:
+    """kitty, Ghostty or WezTerm outside a multiplexer: they draw powerline caps natively."""
+    if os.environ.get("TMUX") or os.environ.get("TERM", "").startswith(("screen", "tmux")):
+        return False
+    return (
+        os.environ.get("TERM") in ("xterm-kitty", "xterm-ghostty")
+        or "KITTY_WINDOW_ID" in os.environ
+        or "GHOSTTY_RESOURCES_DIR" in os.environ
+        or os.environ.get("TERM_PROGRAM", "").lower() in ("ghostty", "wezterm")
+    )
 
 
 class Term:
     """Styling for stdout: colors only on a terminal, honoring NO_COLOR and FORCE_COLOR.
 
-    ``width`` and ``color`` override detection (used by the ``browse`` panes).
+    ``width`` and ``color`` override detection (used by the ``browse`` panes). ``rounded`` pills
+    need a terminal that draws powerline glyphs itself; ``sizing`` (kitty's text-sizing protocol,
+    for large titles) is only used when printing straight to a kitty terminal.
     """
 
     def __init__(self, width: int | None = None, color: bool | None = None) -> None:
@@ -49,6 +64,14 @@ class Term:
             self.color = sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
         self.truecolor = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
         self.width = max(60, min(shutil.get_terminal_size((100, 24)).columns, 120)) if width is None else max(40, width)
+        self.rounded = self.color and kitty_like()
+        self.sizing = (
+            self.color
+            and width is None
+            and sys.stdout.isatty()
+            and not os.environ.get("TMUX")
+            and (os.environ.get("TERM") == "xterm-kitty" or "KITTY_WINDOW_ID" in os.environ)
+        )
 
     def rgb(self, hexcolor: str, layer: int) -> str:
         r, g, b = (int(hexcolor[i : i + 2], 16) for i in (1, 3, 5))
@@ -74,6 +97,17 @@ class Term:
             codes.append(self.rgb(bg, 48))
         codes += [c for c, on in (("1", bold), ("3", italic), ("4", underline)) if on]
         return f"\x1b[{';'.join(codes)}m{text}\x1b[0m" if codes else text
+
+    def big(self, text: str, scale: int = 2) -> str:
+        """Text drawn ``scale`` times larger (kitty OSC 66); it covers ``scale`` rows, so the caller
+        leaves ``scale - 1`` empty lines below it."""
+        return f"\x1b]66;s={scale};{text}\x07" if self.sizing else text
+
+    def pill(self, text: str, fg: str, bg: str) -> str:
+        """A rounded chip on terminals that draw powerline caps, a padded block elsewhere."""
+        if self.rounded:
+            return self.s("\ue0b6", bg) + self.s(text, fg, bg, bold=True) + self.s("\ue0b4", bg)
+        return self.s(f" {text} ", fg, bg, bold=True)
 
     def link(self, text: str, url: str) -> str:
         """OSC 8 hyperlink (clickable in most modern terminals)."""
@@ -204,19 +238,21 @@ def bookmark(data: dict[str, Any]) -> None:
     print("\n".join(bookmark_lines(data, Term())))
 
 
-def bookmark_lines(data: dict[str, Any], t: Term) -> list[str]:
+def bookmark_head(data: dict[str, Any], t: Term) -> list[str]:
+    """Title and metadata rows shared by ``show``, the ``browse`` preview and ``read``."""
     w = t.width
     title = data.get("title") or "(untitled)"
-    kind = f" {(data.get('type') or 'article').upper()} "
-    star = "★ " if data.get("is_marked") else ""
-    room = w - len(kind) - len(star) - 3
-    head = t.s(kind, BASE, MAUVE, bold=True) + t.s(
-        pad(" " + trunc(title, room), w - len(kind) - len(star)), BASE, BLUE, bold=True
-    )
-    lines = [head + t.s(star, BASE, BLUE, bold=True), ""]
-    if vlen(title) > room:
-        for i, part in enumerate(wrap(title, w - 15)):
-            lines.append(key(t, "Title" if i == 0 else "") + t.s(part, TEXT, bold=True))
+    badge = t.pill((data.get("type") or "article").upper(), BASE, MAUVE)
+    indent = "  " + " " * vlen(badge) + "  "
+    star = "  " + t.s("★", YELLOW) if data.get("is_marked") else ""
+    scale = 2 if t.sizing else 1
+    parts = wrap(title, max(10, (w - len(indent) - 3) // scale))
+    lines = []
+    for i, part in enumerate(parts):
+        lead = "  " + badge + "  " if i == 0 else indent
+        lines.append(lead + t.s(t.big(part, scale), BLUE, bold=True) + (star if i == len(parts) - 1 else ""))
+        lines += [""] * (scale - 1)
+    lines.append("")
     site = data.get("site_name") or data.get("site")
     if site:
         lines.append(key(t, "Site") + t.s(site, MAUVE, bold=True))
@@ -240,7 +276,7 @@ def bookmark_lines(data: dict[str, Any], t: Term) -> list[str]:
         + (t.s(f"  of {' · '.join(extent)}", MUTED) if extent else "")
     )
     if data.get("labels"):
-        lines.append(key(t, "Labels") + " ".join(t.s(f" {x} ", label_color(x), SURFACE) for x in data["labels"]))
+        lines.append(key(t, "Labels") + " ".join(t.pill(x, label_color(x), SURFACE) for x in data["labels"]))
     state = [
         t.s("★ favorite", YELLOW) if data.get("is_marked") else t.s("☆ not favorite", MUTED),
         t.s("▣ archived", MUTED) if data.get("is_archived") else t.s("▢ in inbox", GREEN),
@@ -248,6 +284,13 @@ def bookmark_lines(data: dict[str, Any], t: Term) -> list[str]:
     if data.get("lang"):
         state.append(t.s(data["lang"], SUB))
     lines.append(key(t, "State") + t.s("  ·  ", MUTED).join(state))
+    return lines
+
+
+def bookmark_lines(data: dict[str, Any], t: Term) -> list[str]:
+    """Detail view: the shared head, then note, description and links."""
+    w = t.width
+    lines = bookmark_head(data, t)
     for i, part in enumerate(wrap(data.get("note") or "", w - 15)):
         lines.append(key(t, "Note" if i == 0 else "") + t.s(part, YELLOW))
     description = wrap(data.get("description") or "", w - 6)
