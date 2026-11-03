@@ -15,8 +15,9 @@ If `readeck` is not on PATH, either install it (`uv tool install git+https://git
 uvx --from git+https://github.com/dvx76/readeck-cli readeck <command> [options]
 ```
 
-All output of `search`/`show`/`highlights`/`labels`/`collections` is JSON by default (made for
-parsing); `--format table` is for humans. Exit code 3 means the CLI is not configured — see
+Output is JSON when stdout is not a terminal and a colored, human-oriented view on a terminal.
+Always pass `-o json` (`--output json`) so you get JSON even if your shell runs commands in a
+pseudo-terminal; the examples below omit it for brevity. Exit code 3 means the CLI is not configured — see
 Setup below and stop to tell the user. Exit code 1 is an API or network error with a
 `readeck: ...` message on stderr; on `timed out after Ns`, retry once with a larger `--timeout`.
 `mirror` records per-bookmark failures (including timeouts) under `failed` and keeps going.
@@ -36,9 +37,9 @@ can run `readeck auth` themselves; if they paste one, write `~/.config/readeck/c
 ## Commands
 
 ```sh
-readeck search -q "linux kernel" --since 6m       # full-text search, JSON out
+readeck search -q "linux kernel" --since 6m -o json  # full-text search
 readeck search --labels security --read-status unread --sort -created
-readeck search -q "rust" --all --format table     # fetch every match (up to --max, default 500)
+readeck search -q "rust" --all                    # fetch every match (up to --max, default 500)
 readeck show <ID>                                 # one bookmark's metadata
 readeck read <ID>                                 # article as Markdown on stdout
 readeck read <ID> --out /path/file.md             # save instead of printing

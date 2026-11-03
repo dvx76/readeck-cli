@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from readeck_cli import pretty
 from readeck_cli.api import Api, CliError, fail
 from readeck_cli.config import (
     DEFAULT_CONFIG_PATH,
@@ -24,7 +25,6 @@ from readeck_cli.utils import (
     bool_param,
     dump_json,
     mask_token,
-    print_bookmark_table,
     slugify,
     summarize,
     time_token,
@@ -51,6 +51,33 @@ def build_filter_params(args: argparse.Namespace) -> dict[str, Any]:
         "sort": args.sort,
     }
     return {k: v for k, v in params.items() if v is not None}
+
+
+def describe_filters(args: argparse.Namespace) -> str:
+    """One-line human summary of the active search filters (pretty output)."""
+    parts = [f'"{args.query}"'] if args.query else []
+    for name in ("since", "until", "title", "author", "site", "lang", "labels", "collection"):
+        if getattr(args, name):
+            parts.append(f"{name} {getattr(args, name)}")
+    for name in ("type", "read_status"):
+        if getattr(args, name):
+            parts.append(",".join(getattr(args, name)))
+    for name, yes, no in (
+        ("marked", "favorites", "not favorites"),
+        ("archived", "archived", "not archived"),
+        ("has_notes", "with notes", "without notes"),
+    ):
+        if getattr(args, name) is not None:
+            parts.append(yes if getattr(args, name) else no)
+    return " · ".join(parts)
+
+
+def emit(args: argparse.Namespace, payload: Any, render: Callable[[Any], None]) -> None:
+    """Print ``payload`` as JSON or through its pretty renderer, per ``-o/--output``."""
+    if args.output == "json":
+        dump_json(payload)
+    else:
+        render(payload)
 
 
 def fetch_page(api: Api, args: argparse.Namespace, limit: int, offset: int) -> tuple[list[dict], int]:
@@ -84,23 +111,23 @@ def cmd_search(api: Api, base_url: str, args: argparse.Namespace) -> None:
         bookmarks, total = fetch_all(api, args, args.max)
     else:
         bookmarks, total = fetch_page(api, args, args.limit, args.offset)
-    if args.format == "table":
-        print_bookmark_table(bookmarks, base_url)
-        print(f"({len(bookmarks)} of {total})")
-    else:
-        dump_json(
-            {
-                "total": total,
-                "count": len(bookmarks),
-                "offset": args.offset,
-                "bookmarks": [summarize(b, base_url) for b in bookmarks],
-            }
-        )
+    payload = {
+        "total": total,
+        "count": len(bookmarks),
+        "offset": args.offset,
+        "bookmarks": [summarize(b, base_url) for b in bookmarks],
+    }
+    by_created = (args.sort or "-created").split(",")[0].lstrip("-") == "created"
+    emit(
+        args,
+        payload,
+        lambda p: pretty.bookmark_list(p["bookmarks"], total, args.offset, describe_filters(args), by_created),
+    )
 
 
 def cmd_show(api: Api, base_url: str, args: argparse.Namespace) -> None:
     _, data = api.json("GET", f"/bookmarks/{args.id}")
-    dump_json(summarize(data, base_url))
+    emit(args, summarize(data, base_url), pretty.bookmark)
 
 
 def cmd_read(api: Api, base_url: str, args: argparse.Namespace) -> None:
@@ -110,14 +137,13 @@ def cmd_read(api: Api, base_url: str, args: argparse.Namespace) -> None:
         path = Path(args.out).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
-        dump_json(
-            {
-                "id": args.id,
-                "path": str(path),
-                "bytes": len(body),
-                "readeck_url": f"{base_url}/bookmarks/{args.id}",
-            }
-        )
+        receipt = {
+            "id": args.id,
+            "path": str(path),
+            "bytes": len(body),
+            "readeck_url": f"{base_url}/bookmarks/{args.id}",
+        }
+        emit(args, receipt, pretty.record)
     else:
         sys.stdout.write(text)
         if text and not text.endswith("\n"):
@@ -131,26 +157,14 @@ def cmd_highlights(api: Api, base_url: str, args: argparse.Namespace) -> None:
         _, data = api.json("GET", "/bookmarks/annotations", {"limit": args.limit, "offset": args.offset})
     keys = ("id", "text", "created", "bookmark_id", "bookmark_title", "bookmark_url", "bookmark_site_name")
     highlights = [{k: h[k] for k in keys if h.get(k) not in (None, "")} for h in data]
-    if args.format == "table":
-        if not highlights:
-            print("no highlights")
-        for highlight in highlights:
-            where = highlight.get("bookmark_title") or highlight.get("bookmark_id", "")
-            print(f"- {highlight.get('text', '')[:100]}")
-            print(f"  {where}  {highlight.get('created', '')[:10]}  id={highlight.get('id', '')}")
-    else:
-        dump_json(highlights)
+    emit(args, highlights, pretty.highlights)
 
 
 def cmd_labels(api: Api, base_url: str, args: argparse.Namespace) -> None:
     _, data = api.json("GET", "/bookmarks/labels")
     labels = [{"name": x.get("name", ""), "count": x.get("count", 0)} for x in data]
     labels.sort(key=lambda x: (-x["count"], x["name"]))
-    if args.format == "table":
-        for label in labels:
-            print(f"{label['count']:5}  {label['name']}")
-    else:
-        dump_json(labels)
+    emit(args, labels, pretty.labels)
 
 
 def cmd_collections(api: Api, base_url: str, args: argparse.Namespace) -> None:
@@ -172,17 +186,12 @@ def cmd_collections(api: Api, base_url: str, args: argparse.Namespace) -> None:
         "is_pinned",
     )
     collections = [{k: c[k] for k in keys if c.get(k) not in (None, "", [])} for c in data]
-    if args.format == "table":
-        for collection in collections:
-            desc = " ".join(f"{k}={v}" for k, v in collection.items() if k not in ("id", "name", "is_pinned"))
-            print(f"{collection.get('id', ''):10} {collection.get('name', '')}  {desc}")
-    else:
-        dump_json(collections)
+    emit(args, collections, pretty.collections)
 
 
 def cmd_info(api: Api, base_url: str, args: argparse.Namespace) -> None:
     _, data = api.json("GET", "/info")
-    dump_json(data)
+    emit(args, data, pretty.record)
 
 
 def cmd_mirror(api: Api, base_url: str, args: argparse.Namespace) -> None:
@@ -227,15 +236,8 @@ def cmd_mirror(api: Api, base_url: str, args: argparse.Namespace) -> None:
 
     index["updated"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
     index_path.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
-    dump_json(
-        {
-            "dir": str(root),
-            "matched": total,
-            "added": len(added),
-            "skipped": skipped,
-            "failed": failed,
-        }
-    )
+    summary = {"dir": str(root), "matched": total, "added": len(added), "skipped": skipped, "failed": failed}
+    emit(args, summary, pretty.record)
 
 
 def cmd_auth(args: argparse.Namespace) -> None:
@@ -293,16 +295,15 @@ def _auth_login(args: argparse.Namespace) -> None:
         except CliError as exc:
             error = str(exc)
             print(f"readeck: warning: credentials saved, but verification failed: {exc}", file=sys.stderr)
-    dump_json(
-        {
-            "config": str(path),
-            "url": url,
-            "token": mask_token(token),
-            "verified": verified,
-            "instance": instance,
-            "error": error,
-        }
-    )
+    result = {
+        "config": str(path),
+        "url": url,
+        "token": mask_token(token),
+        "verified": verified,
+        "instance": instance,
+        "error": error,
+    }
+    emit(args, result, pretty.record)
 
 
 def _auth_status(args: argparse.Namespace) -> None:
@@ -327,20 +328,19 @@ def _auth_status(args: argparse.Namespace) -> None:
             report["instance"] = instance
         except CliError as exc:
             report["error"] = str(exc)
-    dump_json(report)
+    emit(args, report, pretty.record)
     if not resolved.configured:
         raise SystemExit(3)
 
 
 def _auth_logout(args: argparse.Namespace) -> None:
     removed = clear_settings()
-    dump_json(
-        {
-            "config": str(DEFAULT_CONFIG_PATH),
-            "removed": removed,
-            "note": "READECK_URL/READECK_TOKEN environment variables and --url/--token flags are not affected",
-        }
-    )
+    result = {
+        "config": str(DEFAULT_CONFIG_PATH),
+        "removed": removed,
+        "note": "READECK_URL/READECK_TOKEN environment variables and --url/--token flags are not affected",
+    }
+    emit(args, result, pretty.record)
 
 
 COMMANDS: dict[str, Callable[[Api, str, argparse.Namespace], None]] = {

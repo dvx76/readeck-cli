@@ -29,7 +29,7 @@ variables or `--url`/`--token` flags override the config file.
 ## Usage
 
 ```sh
-readeck search -q "linux kernel" --since 6m       # JSON by default, --format table for humans
+readeck search -q "linux kernel" --since 6m       # colored view on a terminal, JSON when piped
 readeck read <ID>                                 # article as Markdown (--out FILE to save)
 readeck highlights [<ID>]                         # highlighted passages
 readeck labels                                    # labels with counts
@@ -40,6 +40,10 @@ Search filters: `--since`/`--until` (`6m`, `30d`, `2w`, `1y`, or dates), `--titl
 `--site`, `--lang`, `--labels`, `--type`, `--read-status`, `--marked`, `--archived`,
 `--has-notes`, `--collection`, `--sort`, `--limit`, `--offset`, `--all`. Full syntax:
 `readeck search --help`.
+
+Output: on a terminal every command prints a colored, human-friendly view; when stdout is piped
+or redirected it prints JSON (for agents and `jq`). Force either with `-o pretty` or `-o json`.
+Colors honor `NO_COLOR` and `FORCE_COLOR`.
 
 Exit codes: `1` API error, `2` usage error, `3` not configured.
 

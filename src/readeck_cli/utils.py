@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from typing import Any
 
 RELATIVE_TIME_RX = re.compile(r"^\+?(\d+)([dwmy])$")
@@ -89,32 +88,3 @@ def mask_token(token: str) -> str:
 
 def dump_json(payload: Any) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-
-
-def print_bookmark_table(bookmarks: list[dict[str, Any]], base_url: str) -> None:
-    if not bookmarks:
-        print("no results")
-        return
-    for bookmark in bookmarks:
-        flags = []
-        if bookmark.get("is_marked"):
-            flags.append("*")
-        if bookmark.get("is_archived"):
-            flags.append("archived")
-        if bookmark.get("read_progress") == 100:
-            flags.append("read")
-        date = (bookmark.get("created") or "")[:10]
-        title = (bookmark.get("title") or "(untitled)")[:88]
-        print(f"{bookmark.get('id', ''):10} {date}  {title}")
-        extra = " ".join(
-            str(x)
-            for x in (
-                " ".join(flags),
-                ",".join(bookmark.get("labels") or []),
-                bookmark.get("site_name") or bookmark.get("site") or "",
-            )
-            if x
-        )
-        if extra:
-            print(f"{'':10}           {extra}")
-        sys.stdout.flush()

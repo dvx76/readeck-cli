@@ -24,7 +24,7 @@ def write_config(path, url: str, token: str) -> None:
 
 
 def auth_args(**overrides) -> argparse.Namespace:
-    defaults = dict(url=None, token=None, no_verify=True, insecure=False, timeout=30.0, action="login")
+    defaults = dict(url=None, token=None, no_verify=True, insecure=False, timeout=30.0, action="login", output="json")
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 

@@ -16,6 +16,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token", help="Readeck API token (env: READECK_TOKEN)")
     parser.add_argument("--insecure", action="store_true", help="skip TLS certificate verification")
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds (default 30)")
+    parser.add_argument(
+        "-o",
+        "--output",
+        choices=["pretty", "json"],
+        help="output format (default: pretty on a terminal, json when piped)",
+    )
 
 
 def add_filter_args(parser: argparse.ArgumentParser) -> None:
@@ -67,7 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--offset", type=int, default=0)
     search.add_argument("--all", action="store_true", help="fetch all matching pages (up to --max)")
     search.add_argument("--max", type=int, default=500, help="cap for --all (default 500)")
-    search.add_argument("--format", choices=["json", "table"], default="json")
 
     show = sub.add_parser("show", help="show one bookmark's metadata")
     add_common_args(show)
@@ -83,15 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     highlights.add_argument("id", nargs="?", help="bookmark ID (omit for the whole library)")
     highlights.add_argument("--limit", type=int, default=50)
     highlights.add_argument("--offset", type=int, default=0)
-    highlights.add_argument("--format", choices=["json", "table"], default="json")
 
     labels = sub.add_parser("labels", help="list labels with counts")
     add_common_args(labels)
-    labels.add_argument("--format", choices=["json", "table"], default="json")
 
     collections = sub.add_parser("collections", help="list saved collections (saved searches)")
     add_common_args(collections)
-    collections.add_argument("--format", choices=["json", "table"], default="json")
 
     mirror = sub.add_parser("mirror", help="export matching articles as Markdown files (incremental)")
     add_common_args(mirror)
@@ -119,6 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
+    if args.output is None:
+        args.output = "pretty" if sys.stdout.isatty() else "json"
     try:
         if args.command == "auth":
             cmd_auth(args)

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import pty
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -36,10 +40,38 @@ def test_search_all_fetches_every_page(run):
     assert data["total"] == 2
 
 
-def test_search_table_output(run):
-    proc = run("search", "-q", "linux", "--format", "table")
-    assert "bm1" in proc.stdout
-    assert "Linux Kernel" in proc.stdout
+def test_search_pretty_output(run):
+    out = run("search", "-q", "linux", "--archived", "-o", "pretty").stdout
+    assert "\x1b[" not in out  # piped: no color escapes
+    assert '1–2 of 2 bookmarks  ·  "linux" · archived' in out
+    assert "bm1" in out
+    assert "#security" in out
+    groups = ("This week", "This month", "Last 3 months", "This year", "Older")
+    assert any(g in out for g in groups)  # grouped by save date under the default sort
+    assert not any(g in run("search", "--sort", "title", "-o", "pretty").stdout for g in groups)
+
+
+def test_output_defaults_to_pretty_on_a_terminal(stub):
+    primary, replica = pty.openpty()
+    env = base_env(stub, {"NO_COLOR": "1", "COLUMNS": "100"})
+    proc = subprocess.Popen([sys.executable, "-m", "readeck_cli", "show", "bm1"], stdout=replica, env=env)
+    os.close(replica)
+    chunks = []
+    while True:
+        try:
+            chunk = os.read(primary, 4096)
+        except OSError:  # EIO once the child closes the terminal
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.close(primary)
+    assert proc.wait() == 0
+    out = b"".join(chunks).decode()
+    assert "\x1b[" not in out  # NO_COLOR is honored
+    assert "ARTICLE" in out
+    assert "Read later" in out
+    assert f"{stub.url}/bookmarks/bm1" in out
 
 
 def test_show_keeps_metadata(run):
@@ -66,14 +98,15 @@ def test_highlights_library_and_bookmark(run):
     highlights = json.loads(run("highlights").stdout)
     assert highlights[0]["bookmark_title"] == BM1["title"]
     assert highlights[0]["text"] == "highlighted passage"
-    table = run("highlights", "bm1", "--format", "table").stdout
-    assert "highlighted passage" in table
+    pretty = run("highlights", "-o", "pretty").stdout
+    assert "highlighted passage" in pretty
+    assert BM1["title"] in pretty
 
 
 def test_labels_sorted_with_counts(run):
     labels = json.loads(run("labels").stdout)
     assert [label["name"] for label in labels] == ["linux", "security"]
-    assert "linux" in run("labels", "--format", "table").stdout
+    assert "linux" in run("labels", "-o", "pretty").stdout
 
 
 def test_collections(run):

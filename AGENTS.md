@@ -6,7 +6,8 @@ Notes for agents working on this repository.
 
 `readeck-cli` is a read-only CLI client for a self-hosted Readeck instance. It talks to the
 Readeck REST API and must never add write operations (no saving, archiving, editing, or deleting
-in the user's library). Agent-facing output is JSON by default; humans use `--format table`.
+in the user's library). Output is JSON when stdout is not a TTY (agents, pipes) and the colored
+`pretty` view on a terminal; `-o/--output json|pretty` forces either.
 
 ## Development
 
@@ -21,8 +22,10 @@ uv run ruff format    # format
 
 - Python 3.14+, **stdlib only at runtime** (no dependencies in `[project].dependencies`).
 - Layout: `cli.py` (argument parsing/dispatch), `commands.py` (behavior), `api.py` (HTTP),
-  `config.py` (credential resolution), `utils.py` (formatting). Add new commands in
-  `commands.py`, register them in `COMMANDS`, define their arguments in `cli.py`.
+  `config.py` (credential resolution), `utils.py` (JSON shaping and helpers), `pretty.py`
+  (terminal rendering for `-o pretty`). Add new commands in
+  `commands.py`, register them in `COMMANDS`, define their arguments in `cli.py`, and print
+  results with `emit(args, payload, pretty.<renderer>)` so both output formats stay available.
 - Exit codes: `1` API error, `2` usage error, `3` configuration error. Keep this contract
   stable; the skill and tests rely on it.
 - Never print or log tokens unmasked (use `utils.mask_token`); the config file is written with
