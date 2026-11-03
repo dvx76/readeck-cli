@@ -17,7 +17,9 @@ uvx --from git+https://github.com/dvx76/readeck-cli readeck <command> [options]
 
 All output of `search`/`show`/`highlights`/`labels`/`collections` is JSON by default (made for
 parsing); `--format table` is for humans. Exit code 3 means the CLI is not configured — see
-Setup below and stop to tell the user.
+Setup below and stop to tell the user. Exit code 1 is an API or network error with a
+`readeck: ...` message on stderr; on `timed out after Ns`, retry once with a larger `--timeout`.
+`mirror` records per-bookmark failures (including timeouts) under `failed` and keeps going.
 
 ## Setup
 

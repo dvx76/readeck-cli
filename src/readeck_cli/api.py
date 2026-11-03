@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import ssl
 import sys
@@ -71,7 +72,16 @@ class Api:
                 hint = " (not found: bad ID, or the bookmark has no article yet)"
             raise CliError(f"Readeck API error {exc.code} for {method} {path}{hint}: {body}") from exc
         except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise self._timeout_error(method, path) from exc
             raise CliError(f"cannot reach Readeck at {self.base}: {exc.reason}") from exc
+        except TimeoutError as exc:  # raised by resp.read() once the response has started
+            raise self._timeout_error(method, path) from exc
+        except (OSError, http.client.HTTPException) as exc:  # connection reset, incomplete read, ...
+            raise CliError(f"network error for {method} {path}: {type(exc).__name__}: {exc}") from exc
+
+    def _timeout_error(self, method: str, path: str) -> CliError:
+        return CliError(f"timed out after {self.timeout:g}s for {method} {path} (raise it with --timeout SECONDS)")
 
     def json(self, method: str, path: str, params: dict[str, Any] | None = None) -> tuple[Any, Any]:
         headers, body = self.request(method, path, params)

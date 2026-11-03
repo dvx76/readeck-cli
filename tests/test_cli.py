@@ -107,6 +107,20 @@ def test_bad_token_exits_1(run):
     assert "401" in proc.stderr
 
 
+def test_read_timeout_is_clean_error_and_mirror_continues(run, tmp_path):
+    proc = run("read", "slow", "--timeout", "0.2", expect_ok=False)
+    assert proc.returncode == 1
+    assert proc.stderr.startswith("readeck: timed out after 0.2s")
+    assert "--timeout" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+    result = json.loads(run("mirror", "-q", "slow", "--dir", str(tmp_path), "--timeout", "0.2").stdout)
+    assert result["added"] == 1
+    assert [f["id"] for f in result["failed"]] == ["slow"]
+    assert "timed out" in result["failed"][0]["error"]
+    assert "bm1" in json.loads((tmp_path / "_index.json").read_text())["bookmarks"]
+
+
 def test_missing_config_exits_3(stub):
     env = base_env(stub)
     env.pop("READECK_URL")
