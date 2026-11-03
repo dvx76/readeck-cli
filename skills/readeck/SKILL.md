@@ -82,3 +82,7 @@ Search filters (all combinable, AND semantics): `-q`, `--since`/`--until` (accep
 - Some bookmarks (videos, failed fetches, PDFs with errors) have no article; `read` returns a
   404-flavored error for them. Prefer results with `has_article: true` and `loaded: true`.
 - If the user's instance has a self-signed certificate, add `--insecure` to commands.
+- The CLI refuses redirects to another origin (scheme, host, or port) so the token is never sent
+  elsewhere; it exits 1 with "redirected ... to a different origin: <target>". Do not retry or
+  point the CLI at the target; tell the user to fix `READECK_URL` (e.g. `http` vs `https`) or
+  their reverse proxy.
