@@ -8,12 +8,12 @@ library.
 ## Install
 
 ```sh
-uv tool install readeck-cli   # installs the `readeck` command
+uv tool install git+https://github.com/dvx76/readeck-cli   # installs the `readeck` command
 # or run without installing:
-uvx --from readeck-cli readeck search -q "linux kernel" --since 6m
+uvx --from git+https://github.com/dvx76/readeck-cli readeck search -q "linux kernel" --since 6m
 ```
 
-Not on PyPI yet: from a checkout, use `uv tool install .`.
+Not on PyPI yet. From a checkout, `uv tool install .` also works.
 
 ## Setup
 
