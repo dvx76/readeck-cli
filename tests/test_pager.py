@@ -133,6 +133,14 @@ class Terminal:
                 except OSError:  # EIO: the command exited
                     break
 
+    def idle(self, seconds: float) -> bytes:
+        """What the command writes during ``seconds`` without input."""
+        out, deadline = b"", time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            if select.select([self.primary], [], [], left)[0]:
+                out += os.read(self.primary, 65536)
+        return out
+
     def send(self, keys: bytes) -> None:
         self.screen = b""
         os.write(self.primary, keys)
@@ -152,6 +160,7 @@ def test_read_pages_on_a_terminal_and_q_quits(stub):
     term = Terminal(stub, "read", "bm1")
     term.expect(b"j/k scroll")  # the status line
     assert b"\x1b[?1049h" in term.screen  # alternate screen
+    assert term.idle(0.8) == b""  # no redraws without input (they flicker)
     term.send(b"G")
     term.expect(b"100%")
     term.send(b"q")

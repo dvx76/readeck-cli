@@ -24,6 +24,7 @@ try:
 except ImportError:  # Windows
     termios = tty = None  # type: ignore[assignment]
 
+SYNC_START, SYNC_END = "\x1b[?2026h", "\x1b[?2026l"  # synchronized output: frames appear at once
 HINTS = "j/k scroll · / search · ]/[ section · c contents · tab links · q quit"
 
 
@@ -51,6 +52,7 @@ class Pager:
         self.history: list[int] = []
         self.opening: str | None = None  # external link to open
         self.top = 0
+        self.tall_rows: set[int] = set()  # screen rows that showed 2× text in the last frame
         self.load(doc, cols, rows)
 
     def load(self, doc: Any, cols: int, rows: int) -> None:
@@ -280,6 +282,8 @@ class Pager:
     def render(self) -> str:
         doc, t = self.doc, pretty.Term(width=self.cols, color=True)
         out = []
+        shown = [i for i in range(self.body) if self.top + i in doc.tall]
+        tall_rows, self.tall_rows = self.tall_rows, {r for i in shown for r in (i, i + 1)}  # last frame's
         if doc.mode == images.DIRECT:
             out += [images.delete(p[4]) for p in doc.pictures]
         for i in range(self.body):
@@ -292,7 +296,10 @@ class Pager:
                     line = ""  # no room for both rows
                 else:
                     out.append(f"\x1b[{i + 2};1H\x1b[2K")
-            out.append(f"\x1b[{i + 1};1H\x1b[2K{line}\x1b[0m")
+            if row in doc.tall or i in tall_rows:  # 2× text must be cleared before it is redrawn
+                out.append(f"\x1b[{i + 1};1H\x1b[2K{line}\x1b[0m")
+            else:  # draw, then clear the rest: no blank flash on terminals without synchronized output
+                out.append(f"\x1b[{i + 1};1H{line}\x1b[0m\x1b[K")
             for n, (r, start, end) in enumerate(self.matches):
                 if r == row:
                     color = pretty.PEACH if n == self.match else pretty.YELLOW
@@ -305,8 +312,8 @@ class Pager:
             out += self.place_pictures()
         if self.contents is not None:
             out.append(self.panel(t))
-        out.append(f"\x1b[{self.rows};1H\x1b[2K" + self.status(t) + "\x1b[0m")
-        return "".join(out)
+        out.append(f"\x1b[{self.rows};1H" + self.status(t) + "\x1b[0m\x1b[K")
+        return SYNC_START + "".join(out) + SYNC_END
 
     def overlay(self, i: int, line: str, start: int, end: int, t, bg: str) -> str:
         """Redraw columns ``start``..``end`` of screen row ``i`` (plain ``line``) highlighted."""
@@ -402,6 +409,7 @@ def page(layout: Callable[[int, int], Any], doc: Any, keys: int, out: int) -> No
     try:
         start()
         show_images()
+        dirty = True  # redraw only after a key or a resize
         while True:
             current = os.get_terminal_size(out)
             if (current.columns, current.lines) != (app.cols, app.rows):
@@ -413,11 +421,15 @@ def page(layout: Callable[[int, int], Any], doc: Any, keys: int, out: int) -> No
                     app.scroll_to(app.sections[index][0] + offset)
                 else:
                     app.scroll_to(round(share * len(app.doc.lines)))
-                write_all(out, "\x1b[2J")
+                write_all(out, SYNC_START + "\x1b[2J")
                 show_images()
-            write_all(out, app.render())
+                dirty = True
+            if dirty:
+                write_all(out, app.render())
+                dirty = False
             if not select.select([keys], [], [], 0.25)[0]:
                 continue
+            dirty = True
             for key, text in parse_keys(os.read(keys, 4096)):
                 action = app.handle(key, text)
                 if action == "quit":
@@ -428,7 +440,7 @@ def page(layout: Callable[[int, int], Any], doc: Any, keys: int, out: int) -> No
                     opened = webbrowser.open(url)
                     tty.setraw(keys, termios.TCSANOW)
                     app.message = f"opened {url}" if opened else f"no browser available for {url}"
-                    write_all(out, "\x1b[2J")
+                    write_all(out, SYNC_START + "\x1b[2J")
     finally:
         write_all(out, "".join(images.delete(p[4], free=True) for p in app.doc.pictures))
         write_all(out, "\x1b[2J\x1b[?25h\x1b[?1049l")
