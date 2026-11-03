@@ -155,7 +155,7 @@ def cmd_read(api: Api, base_url: str, args: argparse.Namespace) -> None:
         emit(args, receipt, pretty.record)
     elif args.output == "pretty" and not args.raw:
         _, data = api.json("GET", f"/bookmarks/{args.id}")
-        reader.show(text, summarize(data, base_url), api)
+        reader.show(text, summarize(data, base_url), api, paging="never" if args.no_pager else "auto")
     else:
         sys.stdout.write(text)
         if text and not text.endswith("\n"):

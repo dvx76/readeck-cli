@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import sys
-from typing import Any, TextIO
+from typing import Any
 
 from readeck_cli import images
 from readeck_cli.api import Api
@@ -74,14 +74,16 @@ def front_matter(text: str) -> tuple[dict[str, Any], str]:
 
 
 LIST_RX = re.compile(r"(\s*)([-*+]|\d+[.)])\s+(.*)")
+FOOTNOTE_RX = re.compile(r"\[\^([^\]\s]+)\]:\s*(.*)")
 IMAGE_RX = re.compile(r"\s*\[?!\[([^\]]*)\]\(([^)\s]+)[^)]*\)(?:\]\([^)]*\))?\s*")
 TABLE_RULE_RX = re.compile(r"\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*")
-BLOCK_START_RX = re.compile(r"(#{1,6}\s|```|~~~|>|\s*([-*+]|\d+[.)])\s)")
+BLOCK_START_RX = re.compile(r"(#{1,6}\s|```|~~~|>|\[\^[^\]\s]+\]:|\s*([-*+]|\d+[.)])\s)")
 
 
 def blocks(text: str) -> list[tuple]:
     """Block structure: ("h", level, text), ("p", text), ("img", alt, url), ("code", lang, lines),
-    ("quote", blocks), ("list", [(depth, marker, text)]), ("table", aligns, head, rows), ("hr",)."""
+    ("quote", blocks), ("list", [(depth, marker, text)]), ("table", aligns, head, rows), ("hr",),
+    ("fn", name, text) for a footnote definition (``[^name]: text``)."""
     lines, i, out = text.split("\n"), 0, []
     while i < len(lines):
         line = lines[i]
@@ -102,6 +104,13 @@ def blocks(text: str) -> list[tuple]:
         elif re.fullmatch(r"\s*([-*_])(\s*\1){2,}\s*", line):
             out.append(("hr",))
             i += 1
+        elif m := FOOTNOTE_RX.fullmatch(line):
+            text = m[2]
+            i += 1
+            while i < len(lines) and lines[i].startswith(("    ", "\t")) and lines[i].strip():
+                text += " " + lines[i].strip()
+                i += 1
+            out.append(("fn", m[1], text))
         elif m := IMAGE_RX.fullmatch(line):
             out.append(("img", m[1], m[2]))
             i += 1
@@ -149,7 +158,7 @@ def table_cells(line: str) -> list[str]:
 
 
 INLINE_RX = re.compile(
-    r"`(?P<code>[^`]+)`|!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)[^)]*\)|\[(?P<text>[^\]]+)\]\((?P<href>[^)\s]+)[^)]*\)"
+    r"`(?P<code>[^`]+)`|\[\^(?P<fn>[^\]\s]+)\]|!\[(?P<alt>[^\]]*)\]\((?P<src>[^)\s]+)[^)]*\)|\[(?P<text>[^\]]+)\]\((?P<href>[^)\s]+)[^)]*\)"
     r"|==(?P<mark>[^=]+?)==|\*\*(?P<b>.+?)\*\*|(?<!\w)__(?P<b2>.+?)__(?!\w)"
     r"|\*(?P<i>[^*\s][^*]*?)\*|(?<!\w)_(?P<i2>[^_]+?)_(?!\w)|<(?P<auto>https?://[^>\s]+)>"
 )
@@ -165,6 +174,9 @@ def spans(text: str, flags: frozenset = frozenset(), url: str | None = None) -> 
         g = m.groupdict()
         if g["code"] is not None:
             out.append((g["code"], flags | {"code"}, url))
+        elif g["fn"] is not None:  # footnote reference: a link to its definition
+            label = g["fn"].translate(SUPERSCRIPT) if g["fn"].isdigit() else f"[{g['fn']}]"
+            out.append((label, flags | {"link"}, f"#fn:{g['fn']}"))
         elif g["src"] is not None:
             out.append(("◩ " + (g["alt"] or "image"), flags | {"link"}, g["src"]))
         elif g["href"] is not None:
@@ -187,9 +199,10 @@ def plain(text: str) -> str:
     return "".join(t for t, _, _ in spans(text))
 
 
-def wrap(runs: list[tuple], width: int, style) -> list[tuple[str, set]]:
-    """Word-wrap styled runs; returns (rendered line, flags used on it). Spaces inside a highlight,
-    code span or link keep its styling so the background or underline is continuous."""
+def wrap(runs: list[tuple], width: int, style) -> list[tuple[str, set, list[tuple[int, int, str, str]]]]:
+    """Word-wrap styled runs; returns (rendered line, flags used on it, links on it as (first column,
+    end column, URL, text)). Spaces inside a highlight, code span or link keep its styling so the
+    background or underline is continuous."""
     tokens, word = [], []
     for text, flags, url in runs:
         for part in re.split(r"( )", re.sub(r"\s+", " ", text)):
@@ -221,16 +234,22 @@ def wrap(runs: list[tuple], width: int, style) -> list[tuple[str, set]]:
         lines.append(line)
     out = []
     for line in lines:
-        text, used_flags = "", set()
+        text, used_flags, links, col = "", set(), [], 0
         for token in line:
-            if token[0] == "s":
-                inside = token[1] & {"mark", "code", "link"}
-                text += style(" ", token[1], token[2]) if inside else " "
-            else:
-                for chunk, flags, url in token[1]:
-                    text += style(chunk, flags, url)
+            pieces = [(" ", token[1], token[2])] if token[0] == "s" else token[1]
+            for chunk, flags, url in pieces:
+                inside = token[0] == "w" or flags & {"mark", "code", "link"}
+                text += style(chunk, flags, url) if inside else chunk
+                size = vlen(chunk)
+                if url and "link" in flags:
+                    if links and links[-1][1] == col and links[-1][2] == url:
+                        links[-1] = (links[-1][0], col + size, url, links[-1][3] + chunk)
+                    else:
+                        links.append((col, col + size, url, chunk))
+                col += size
+                if token[0] == "w":
                     used_flags |= flags
-        out.append((text, used_flags))
+        out.append((text, used_flags, links))
     return out
 
 
@@ -279,21 +298,66 @@ def highlight(t: Term, line: str, lang: str) -> str:
 
 # ----------------------------------------------------------------- rendering
 class Row:
-    """One output line: a main-column string, an optional margin string, and a prefix (an image
-    drawn without moving the cursor). ``full`` rows span the margin too, so notes skip them."""
+    """One output line: a main-column string, an optional margin string, a prefix (an image
+    drawn without moving the cursor) and the links on it as (start, end, URL, text) columns of
+    ``main``. ``full`` rows span the margin too, so notes skip them."""
 
-    __slots__ = ("full", "main", "margin", "prefix")
+    __slots__ = ("full", "links", "main", "margin", "prefix")
 
-    def __init__(self, main: str = "", full: bool = False, prefix: str = ""):
-        self.main, self.full, self.prefix, self.margin = main, full, prefix, ""
+    def __init__(self, main: str = "", full: bool = False, prefix: str = "", links: list | None = None):
+        self.main, self.full, self.prefix, self.margin, self.links = main, full, prefix, "", links or []
+
+
+class Document:
+    """A rendered article: its lines, and what the pager needs to navigate them.
+
+    ``links`` are (row, start column, end column, URL, text); ``headings`` are (row, level, number,
+    title) and ``anchors`` map heading slugs and footnote names to rows. ``tall`` rows hold a 2×
+    title that also covers the row below. Images are either Unicode placeholder text in the lines,
+    shown once ``uploads`` are written, or drawn at the cursor: ``prefixes`` per row when printing,
+    ``pictures`` (row, column, cols, rows, image ID, kitty keys, payload) in the pager.
+    """
+
+    def __init__(self, renderer: Renderer, lines: list[str]):
+        self.lines = lines
+        self.mode = renderer.mode
+        self.page_url = renderer.page_url
+        self.title = renderer.title
+        self.headings = renderer.headings
+        self.anchors = renderer.anchors
+        self.uploads = renderer.uploads
+        self.pictures = renderer.pictures
+        self.prefixes = {n: row.prefix for n, row in enumerate(renderer.rows) if row.prefix}
+        self.links = [
+            (n, renderer.left + start, renderer.left + end, url, text)
+            for n, row in enumerate(renderer.rows)
+            for start, end, url, text in row.links
+        ]
+        self.tall = {n for n, line in enumerate(lines) if "\x1b]66;" in line}
+
+    def printed(self) -> str:
+        """The article as printed straight to the terminal."""
+        body = "\n".join(self.prefixes.get(n, "") + line for n, line in enumerate(self.lines))
+        return "".join(self.uploads) + body + "\n"
 
 
 class Renderer:
-    def __init__(self, t: Term, loader: images.Loader | None, cell: tuple[float, float], rows: int):
+    def __init__(
+        self,
+        t: Term,
+        loader: images.Loader | None,
+        cell: tuple[float, float],
+        rows: int,
+        mode: str | None = None,
+        page_url: str | None = None,
+    ):
         self.t = t
         self.loader = loader
         self.cell = cell
         self.screen_rows = rows
+        self.mode = mode if loader else None
+        self.page_url = page_url
+        self.title = ""
         cols = t.width
         self.wide = cols >= 2 + MAIN_WIDE + GAP + MARGIN_MIN + 2
         if self.wide:
@@ -310,6 +374,11 @@ class Renderer:
         self.notes: list[tuple[int, list[str]]] = []
         self.links: list[str] = []
         self.sections = self.subsections = self.figures = 0
+        self.headings: list[tuple[int, int, str, str]] = []
+        self.anchors: dict[str, int] = {}
+        self.uploads: list[str] = []
+        self.pictures: list[tuple] = []
+        self.footnotes = 0
 
     # --------------------------------------------------------------- helpers
     def add(self, main: str = "", **kw) -> int:
@@ -324,7 +393,7 @@ class Renderer:
     def margin_text(self, text: str, color: str, italic: bool = False) -> list[str]:
         return [
             s
-            for s, _ in wrap(
+            for s, *_ in wrap(
                 [(text, frozenset(), None)], self.margin_width, lambda c, f, u: self.t.s(c, color, italic=italic)
             )
         ]
@@ -353,7 +422,7 @@ class Renderer:
             return runs
         out, previous = [], None
         for text, flags, url in [*runs, ("", frozenset(), None)]:
-            if previous and url != previous:
+            if previous and url != previous and not previous.startswith("#fn:"):  # footnotes are numbered already
                 self.links.append(previous)
                 number = len(self.links)
                 out.append((str(number).translate(SUPERSCRIPT), frozenset({"sup", f"ref:{number}"}), None))
@@ -365,14 +434,18 @@ class Renderer:
     def text(self, markdown: str, indent: int = 2, style=None) -> None:
         """A wrapped paragraph in the main column; link references go to the margin."""
         runs = self.with_references(spans(markdown))
-        for line, flags in wrap(runs, self.width - indent, style or self.style):
-            row = self.add(" " * indent + line)
+        for line, flags, links in wrap(runs, self.width - indent, style or self.style):
+            row = self.add(" " * indent + line, links=shifted(links, indent))
             for flag in sorted(f for f in flags if f.startswith("ref:")):
                 number = int(flag[4:])
                 self.note(row, self.reference(number))
 
     def reference(self, number: int) -> list[str]:
         t, url = self.t, self.links[number - 1]
+        anchor = fragment(url, self.page_url)
+        if anchor is not None:  # a jump within the article
+            shown = "↪ #" + READECK_ID_PREFIX_RX.sub("", anchor)
+            return [t.s(str(number).translate(SUPERSCRIPT), MAUVE, bold=True) + " " + t.s(shown, LAVENDER)]
         bare = re.sub(r"^[a-z]+://(www\.)?", "", url)
         host, _, path = bare.partition("/")
         lines = [t.s(str(number).translate(SUPERSCRIPT), MAUVE, bold=True) + " " + t.link(t.s(host, LAVENDER), url)]
@@ -380,9 +453,9 @@ class Renderer:
             lines.append("  " + t.s(trunc("/" + path, self.margin_width - 2), MUTED))
         return lines
 
-    def picture(self, url: str, max_cols: int, max_rows: int) -> tuple[int, int, str] | None:
-        """(cols, rows, escape) for an image that fits ``max_cols``×``max_rows`` cells."""
-        loaded = self.loader.get(url) if self.loader else None
+    def picture(self, url: str, max_cols: int, max_rows: int) -> tuple[int, int, str, bytes] | None:
+        """(cols, rows, kitty keys, payload) for an image that fits ``max_cols``×``max_rows`` cells."""
+        loaded = self.loader.get(url) if self.loader and len(self.pictures) < images.MAX_IMAGES else None
         if not loaded:
             return None
         width, height, keys, payload = loaded
@@ -392,22 +465,37 @@ class Renderer:
         if rows > max_rows:
             rows = max_rows
             cols = max(1, min(max_cols, round(width * rows * ch / height / cw)))
-        return cols, rows, images.escape(keys, payload, cols, rows)
+        return cols, rows, keys, payload
 
     def frame(self, url: str, inner: int, max_rows: int, full: bool) -> int | None:
-        """A rounded frame with the image centered inside; returns the row of its bottom border."""
+        """A rounded frame with the image centered inside; returns the row of its top border."""
         picture = self.picture(url, inner - 2, max_rows)
         if not picture:
             return None
-        cols, rows, escape = picture
+        cols, rows, keys, payload = picture
         t = self.t
+        image = images.image_id(len(self.pictures) + 1)
         top = self.add(t.s("╭" + "─" * inner + "╮", SURFACE2), full=full)
         side = t.s("│", SURFACE2)
-        column = self.left + 1 + (inner - cols) // 2
-        self.add(side + " " * inner + side, full=full, prefix=place(escape, rows, column))
-        for _ in range(rows - 1):
-            self.add(side + " " * inner + side, full=full)
+        before = (inner - cols) // 2
+        if self.mode == images.PLACEHOLDERS:
+            self.uploads.append(images.upload(keys, payload, image, cols, rows))
+            for k in range(rows):
+                cells = images.placeholder_row(image, k, cols)
+                self.add(side + " " * before + cells + " " * (inner - cols - before) + side, full=full)
+        else:
+            column = self.left + 1 + before
+            escape = images.escape(keys, payload, cols, rows)
+            self.add(side + " " * inner + side, full=full, prefix=place(escape, rows, column))
+            for _ in range(rows - 1):
+                self.add(side + " " * inner + side, full=full)
+        self.pictures.append((top + 1, self.left + 1 + before, cols, rows, image, keys, payload))
         return top
+
+    def heading(self, row: int, level: int, number: str, title: str) -> None:
+        self.headings.append((row, level, number, title))
+        for name in (slug(title), loose(title)):
+            self.anchors.setdefault(name, row)
 
     # ---------------------------------------------------------------- blocks
     def header(self, bookmark: dict[str, Any], cover: str | None, contents: list[str], note: str | None) -> None:
@@ -443,7 +531,7 @@ class Renderer:
         elif note:
             inner = self.width - 2
             self.add(t.s("╭─", YELLOW) + t.s(" ✎ Note ", YELLOW, bold=True) + t.s("─" * (inner - 9) + "╮", YELLOW))
-            for line, _ in wrap(spans(note), inner - 4, lambda c, f, u: t.s(c, YELLOW, italic=True)):
+            for line, *_ in wrap(spans(note), inner - 4, lambda c, f, u: t.s(c, YELLOW, italic=True)):
                 self.add(t.s("│", YELLOW) + "  " + pad(line, inner - 3) + t.s(" │", YELLOW))
             self.add(t.s("╰" + "─" * inner + "╯", YELLOW))
             self.add()
@@ -464,18 +552,23 @@ class Renderer:
             self.subsections = 0
             label = t.pill(str(self.sections), BASE, MAUVE) + " " + t.s(plain(block[2]), MAUVE, bold=True) + " "
             self.add()
-            self.add(label + t.s("─" * max(0, self.width - vlen(label)), SURFACE2))
+            row = self.add(label + t.s("─" * max(0, self.width - vlen(label)), SURFACE2))
+            self.heading(row, block[1], str(self.sections), plain(block[2]))
             self.add()
         elif kind == "h" and block[1] == 3:
             self.subsections += 1
             number = f"{self.sections}.{self.subsections}" if self.sections else str(self.subsections)
-            self.add(
+            row = self.add(
                 "  " + t.s(number, PEACH, bold=True) + "  " + t.s(plain(block[2]), PEACH, bold=True, underline=True)
             )
+            self.heading(row, 3, number, plain(block[2]))
             self.add()
         elif kind == "h":
-            self.add("  " + t.s(plain(block[2]), SUB, bold=True))
+            row = self.add("  " + t.s(plain(block[2]), SUB, bold=True))
+            self.heading(row, block[1], "", plain(block[2]))
             self.add()
+        elif kind == "fn":
+            self.footnote(block[1], block[2])
         elif kind == "img":
             self.figure(block[1], block[2])
         elif kind == "quote":
@@ -499,11 +592,11 @@ class Renderer:
         top = self.frame(url, inner, min(22, max(6, self.screen_rows * 2 // 3)), full=False)
         if top is None:  # no inline images here: a link to the picture instead
             chip = t.link(t.s(label + "· open ↗ ", BASE, TEAL, bold=True), url)
-            row = self.add("  " + chip)
+            row = self.add("  " + chip, links=[(2, 2 + vlen(chip), url, label + "· open ↗ ")])
             if caption and self.wide:
                 self.note(row, self.margin_text(caption, SUB, italic=True))
             elif caption:
-                for line, _ in wrap(spans(caption), self.width - 4, lambda c, f, u: t.s(c, SUB, italic=True)):
+                for line, *_ in wrap(spans(caption), self.width - 4, lambda c, f, u: t.s(c, SUB, italic=True)):
                     self.add("  " + line)
             self.add()
             return
@@ -517,7 +610,7 @@ class Renderer:
                 top + 1, [t.s(f"Figure {self.figures}", TEAL, bold=True), *self.margin_text(caption, SUB, italic=True)]
             )
         elif caption and not inline:
-            for line, _ in wrap(spans(caption), self.width - 4, lambda c, f, u: t.s(c, SUB, italic=True)):
+            for line, *_ in wrap(spans(caption), self.width - 4, lambda c, f, u: t.s(c, SUB, italic=True)):
                 self.add("  " + line)
         self.add()
 
@@ -537,8 +630,8 @@ class Renderer:
         for n, paragraph in enumerate(paragraphs):
             if n:
                 self.add("  " + bar + t.s(" " * (self.width - 5), None, MANTLE))
-            for line, _ in wrap(spans(paragraph), self.width - 6, style):
-                self.add("  " + bar + _fill(t, line, self.width - 5, MANTLE))
+            for line, _, links in wrap(spans(paragraph), self.width - 6, style):
+                self.add("  " + bar + _fill(t, line, self.width - 5, MANTLE), links=shifted(links, 5))
         if attribution and self.wide:
             self.note(start, [t.s(attribution, SUB, bold=True)])
         elif attribution:
@@ -589,8 +682,11 @@ class Renderer:
                 bullet = t.s(("●", "○", "▪")[depth % 3], (BLUE, MAUVE, TEAL)[depth % 3])
             width = vlen(bullet) + 1
             runs = self.with_references(spans(text))
-            for n, (line, flags) in enumerate(wrap(runs, self.width - len(indent) - width, self.style)):
-                row = self.add(indent + (bullet + " " if n == 0 else " " * width) + line)
+            for n, (line, flags, links) in enumerate(wrap(runs, self.width - len(indent) - width, self.style)):
+                row = self.add(
+                    indent + (bullet + " " if n == 0 else " " * width) + line,
+                    links=shifted(links, len(indent) + width),
+                )
                 for flag in sorted(f for f in flags if f.startswith("ref:")):
                     self.note(row, self.reference(int(flag[4:])))
         self.add()
@@ -634,6 +730,21 @@ class Renderer:
         self.add(line("╰", "┴", "╯"))
         self.add()
 
+    def footnote(self, name: str, text: str) -> None:
+        """A footnote definition (Readeck writes annotation notes as ``[^n]: note``)."""
+        t = self.t
+        if not self.footnotes:
+            self.add("  " + t.s("─" * 12, SURFACE2))
+        self.footnotes += 1
+        marker = name.translate(SUPERSCRIPT) if name.isdigit() else f"[{name}]"
+        self.anchors[f"fn:{name}"] = len(self.rows)
+        style = lambda c, f, u: self.style(c, f, u) if u else t.s(c, SUB, italic=True)  # noqa: E731
+        width = vlen(marker) + 1
+        for n, (line, _, links) in enumerate(wrap(spans(text), self.width - 2 - width, style)):
+            lead = t.s(marker, MAUVE, bold=True) + " " if n == 0 else " " * width
+            self.add("  " + lead + line, links=shifted(links, 2 + width))
+        self.add()
+
     def footer(self, bookmark: dict[str, Any], minutes: int | None) -> None:
         t = self.t
         site = bookmark.get("site_name") or bookmark.get("site") or ""
@@ -643,11 +754,15 @@ class Renderer:
         if url:
             shown = trunc(re.sub(r"^[a-z]+://(www\.)?", "", url), max(10, self.total - vlen(left) - vlen(right) - 8))
             right += " " + t.link(t.pill("↗ " + shown, BASE, BLUE), url)
-        self.add(left + " " * max(1, self.total - vlen(left) - vlen(right)) + right, full=True)
+        gap = max(1, self.total - vlen(left) - vlen(right))
+        end = vlen(left) + gap + vlen(right) - 1
+        links = [(end - vlen(shown) - 2, end, url, "↗ " + shown)]
+        self.add(left + " " * gap + right, full=True, links=links if url else [])
 
     # ---------------------------------------------------------------- output
     def lines(self) -> list[str]:
-        """Compose rows: main column, then the margin notes flowed down without overlapping."""
+        """Compose rows (without their prefixes): main column, then the margin notes flowed down
+        without overlapping."""
         margin: dict[int, str] = {}
         free = 0
         for at, lines in self.notes:
@@ -664,10 +779,54 @@ class Renderer:
         offset = " " * self.left
         for n, row in enumerate(self.rows):
             if row.full or n not in margin:
-                out.append((row.prefix + offset + row.main).rstrip(" ") if row.main or row.prefix else "")
+                out.append((offset + row.main).rstrip(" ") if row.main else "")
             else:
-                out.append(row.prefix + offset + pad(row.main, self.width) + " " * GAP + margin[n])
+                out.append(offset + pad(row.main, self.width) + " " * GAP + margin[n])
         return out
+
+
+def shifted(links: list[tuple], by: int) -> list[tuple]:
+    return [(start + by, end + by, url, text) for start, end, url, text in links]
+
+
+READECK_ID_PREFIX_RX = re.compile(r"^[A-Za-z]{2}\.[A-Za-z]{4}\.")
+
+
+def slug(title: str) -> str:
+    """GitHub-style heading anchor: lower case, punctuation dropped, spaces as dashes."""
+    return re.sub(r"[^\w\- ]", "", title.lower()).strip().replace(" ", "-")
+
+
+def loose(text: str) -> str:
+    return re.sub(r"[\W_]", "", text.lower())
+
+
+def fragment(url: str, page_url: str | None) -> str | None:
+    """The anchor a link jumps to inside the article: ``#name`` links, and links to the article's
+    own page with a fragment (Readeck keeps the former, but some sites write the latter)."""
+    if url.startswith("#"):
+        return url[1:]
+    base, _, anchor = url.partition("#")
+    same = lambda u: re.sub(r"^[a-z]+://(www\.)?", "", u.lower()).rstrip("/")  # noqa: E731
+    return anchor if anchor and page_url and same(base) == same(page_url.partition("#")[0]) else None
+
+
+def resolve(doc: Document, anchor: str, from_row: int = -1) -> int | None:
+    """The row a same-page link lands on. Readeck drops element IDs from article.md and prefixes
+    same-page links with a random ``Xx.Xxxx.``, so this matches the rest against heading slugs and
+    footnote names; a site footnote (``#fn1``) lands on the link back to it (``#fnref1``) and back."""
+    name = READECK_ID_PREFIX_RX.sub("", anchor)
+    for candidate in (name, name.lower(), slug(name), loose(name)):
+        if candidate in doc.anchors:
+            return doc.anchors[candidate]
+    pair = lambda f: re.sub(r"ref|note|back", "", loose(f))  # noqa: E731
+    for row, _, _, url, _ in doc.links:
+        other = fragment(url, doc.page_url)
+        if other is not None and row != from_row:
+            other = READECK_ID_PREFIX_RX.sub("", other)
+            if loose(other) != loose(name) and pair(other) == pair(name) and pair(name):
+                return row
+    return None
 
 
 def _fill(t: Term, styled: str, width: int, bg: str) -> str:
@@ -716,16 +875,18 @@ def render(
     loader: images.Loader | None = None,
     cell: tuple[float, float] = (10.0, 20.0),
     screen_rows: int = 40,
-) -> list[str]:
+    mode: str | None = images.DIRECT,
+) -> Document:
     meta, cover, note, body = parse(markdown)
     bookmark = {**{"title": meta.get("title"), "site_name": meta.get("website"), "url": meta.get("source")}, **bookmark}
-    r = Renderer(t, loader, cell, screen_rows)
+    r = Renderer(t, loader, cell, screen_rows, mode, bookmark.get("url"))
+    r.title = bookmark.get("title") or ""
     contents = [plain(b[2]) for b in body if b[0] == "h" and b[1] <= 2]
     r.header(bookmark, cover, contents, note)
     for block in body:
         r.block(block)
     r.footer(bookmark, bookmark.get("reading_time"))
-    return r.lines()
+    return Document(r, r.lines())
 
 
 def image_urls(markdown: str) -> list[str]:
@@ -741,23 +902,52 @@ def image_urls(markdown: str) -> list[str]:
     return [u for u in [cover, *walk(body)] if u]
 
 
-def show(markdown: str, bookmark: dict[str, Any], api: Api, stream: TextIO | None = None) -> None:
-    """Print the rendered article (to stdout by default), with inline images when the terminal
-    can draw them."""
-    stream = stream or sys.stdout
-    fd = stream.fileno()
+def show(
+    markdown: str,
+    bookmark: dict[str, Any],
+    api: Api,
+    out: int | None = None,
+    keys: int | None = None,
+    paging: str = "auto",
+) -> None:
+    """Show the rendered article on ``out`` (stdout by default), with inline images when the
+    terminal can draw them. On a terminal, an article taller than the screen opens in the pager
+    (``paging="always"`` even when it fits, ``"never"`` prints it); ``keys`` is the terminal to read
+    keys from (stdin when it is a terminal, else ``/dev/tty``)."""
+    fd = sys.stdout.fileno() if out is None else out
     tty = os.isatty(fd)
     size = os.get_terminal_size(fd) if tty else shutil.get_terminal_size((100, 24))
-    t = Term(width=size.columns, color=None if stream is sys.stdout else tty)
-    t.sizing = t.color and tty and text_sizing()
+    color = None if out is None else tty
+    probe = Term(width=size.columns, color=color)
+    sizing = probe.color and tty and text_sizing()
+    mode = images.mode(fd) if probe.color else None
     loader = None
     cell = (10.0, 20.0)
-    if t.color and images.graphics_supported(fd):
+    if mode:
         cell = images.cell_size(fd)
         loader = images.Loader(api.media, image_urls(markdown), round((size.columns - 4) * cell[0]))
+
+    def layout(cols: int, rows: int) -> Document:
+        t = Term(width=cols, color=color)
+        t.sizing = sizing
+        return render(markdown, bookmark, t, loader, cell, rows, mode)
+
+    from readeck_cli import pager
+
     try:
-        stream.write("\n".join(render(markdown, bookmark, t, loader, cell, size.lines)) + "\n")
-        stream.flush()
+        doc = layout(size.columns, size.lines)
+        if tty and paging != "never" and (paging == "always" or len(doc.lines) >= size.lines) and pager.usable():
+            if keys is None and os.isatty(0):
+                keys = 0
+            terminal = keys if keys is not None else os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+            try:
+                pager.page(layout, doc, terminal, fd)
+            finally:
+                if terminal != keys:
+                    os.close(terminal)
+        else:
+            sys.stdout.flush()
+            pager.write_all(fd, doc.printed())
     finally:
         if loader:
             loader.close()

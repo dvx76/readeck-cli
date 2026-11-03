@@ -123,8 +123,12 @@ class Term:
 
 # ---------------------------------------------------------------- text helpers
 def vlen(text: str) -> int:
-    """Visible width in terminal cells (ignores escapes, counts wide characters twice)."""
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in ANSI_RX.sub("", text))
+    """Visible width in terminal cells (ignores escapes and combining marks, counts wide characters
+    twice)."""
+    return sum(
+        0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in "WF" else 1
+        for c in ANSI_RX.sub("", text)
+    )
 
 
 def pad(text: str, width: int) -> str:

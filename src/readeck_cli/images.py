@@ -3,6 +3,11 @@
 Kitty's graphics protocol (kitty, Ghostty, WezTerm, Rex) takes PNG files or raw pixels. Readeck stores
 article images as PNG, JPEG or (animated) GIF, so PNG goes to the terminal unchanged and JPEG/GIF
 are decoded here, downscaled to the size they are shown at, and sent as raw RGB(A).
+
+Where the terminal supports them (kitty, Ghostty, Rex), images are drawn with Unicode placeholders:
+the image is uploaded once and its cells are ordinary text, so it scrolls and clips with the text
+and also works inside tmux. Other kitty-graphics terminals (WezTerm, Konsole) get images drawn at
+the cursor.
 """
 
 from __future__ import annotations
@@ -11,8 +16,10 @@ import base64
 import functools
 import math
 import os
+import random
 import re
 import struct
+import subprocess
 import time
 import zlib
 from collections.abc import Callable
@@ -31,19 +38,61 @@ class ImageError(ValueError):
 
 
 # ------------------------------------------------------------------ detection
-def graphics_supported(fd: int) -> bool:
-    """Whether the terminal on ``fd`` draws kitty graphics (``READECK_IMAGES=0/1`` overrides).
+PLACEHOLDERS = "placeholders"  # images are text cells (kitty Unicode placeholders)
+DIRECT = "direct"  # images are drawn at the cursor
 
-    Known terminals are recognized from their environment; any other terminal is asked directly.
-    """
+
+def mode(fd: int) -> str | None:
+    """How the terminal on ``fd`` shows images: ``PLACEHOLDERS``, ``DIRECT`` or None (no images).
+    ``READECK_IMAGES=0/1`` turns them off or on; known terminals are recognized from their
+    environment and any other terminal is asked directly."""
     setting = os.environ.get("READECK_IMAGES", "").lower()
     if setting in ("0", "no", "off", "false"):
+        return None
+    forced = setting in ("1", "yes", "on", "true")
+    if not forced and not os.isatty(fd):
+        return None
+    if os.environ.get("TMUX"):  # only placeholders survive tmux, uploaded through its passthrough
+        return PLACEHOLDERS if forced or tmux_placeholders() else None
+    if not forced and in_multiplexer():
+        return None
+    if placeholders_known():
+        return PLACEHOLDERS
+    if forced or kitty_like():
+        return DIRECT
+    supported, placeholders, _ = query_terminal()
+    return (PLACEHOLDERS if placeholders else DIRECT) if supported else None
+
+
+def placeholders_known() -> bool:
+    """kitty (0.28+), Ghostty and Rex (built on libghostty) draw Unicode placeholders; WezTerm does not."""
+    return (
+        os.environ.get("TERM") in ("xterm-kitty", "xterm-ghostty", "xterm-rex")
+        or "KITTY_WINDOW_ID" in os.environ
+        or "GHOSTTY_RESOURCES_DIR" in os.environ
+        or os.environ.get("TERM_PROGRAM", "").lower() in ("ghostty", "rex")
+    )
+
+
+def tmux_placeholders() -> bool:
+    """Inside tmux: the outer terminal draws placeholders and tmux passes graphics through to it
+    (``set -g allow-passthrough on``)."""
+    try:
+        passthrough = subprocess.run(
+            ["tmux", "show", "-Apv", "allow-passthrough"], capture_output=True, text=True, timeout=2
+        ).stdout.split()
+        client = subprocess.run(
+            ["tmux", "display", "-p", "#{client_termname} #{client_termtype}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout.lower()
+    except OSError, subprocess.SubprocessError:
         return False
-    if setting in ("1", "yes", "on", "true"):
-        return True
-    if in_multiplexer() or not os.isatty(fd):
-        return False
-    return kitty_like() or query_terminal()[0]
+    outer = client.startswith(("xterm-kitty", "xterm-ghostty", "xterm-rex")) or any(
+        name in client for name in (" kitty", " ghostty", " rex")
+    )
+    return outer and bool(passthrough) and passthrough[-1] in ("on", "all")
 
 
 def cell_size(fd: int) -> tuple[float, float]:
@@ -57,17 +106,18 @@ def cell_size(fd: int) -> tuple[float, float]:
             return xpx / cols, ypx / rows
     except ImportError, OSError, ValueError:
         pass
-    return query_terminal()[1] or (10.0, 20.0)
+    return query_terminal()[2] or (10.0, 20.0)
 
 
 @functools.cache
-def query_terminal(timeout: float = 0.5) -> tuple[bool, tuple[float, float] | None]:
-    """Ask the controlling terminal whether it supports kitty graphics and how big its cells are.
+def query_terminal(timeout: float = 0.5) -> tuple[bool, bool, tuple[float, float] | None]:
+    """Ask the controlling terminal whether it supports kitty graphics and Unicode placeholders,
+    and how big its cells are.
 
-    Sends a kitty graphics query (a 1x1 image that is checked, not stored), a cell size request
-    (CSI 16 t) and a primary device attributes request (CSI c). Every terminal answers the last
-    one, and in order, so its reply ends the wait without a timeout on terminals that ignore the
-    first two.
+    Sends a kitty graphics query (a 1x1 image that is checked, not stored), a placeholder feature
+    query (kitty 0.50+), a cell size request (CSI 16 t) and a primary device attributes request
+    (CSI c). Every terminal answers the last one, and in order, so its reply ends the wait without
+    a timeout on terminals that ignore the others.
     """
     try:
         import select
@@ -76,13 +126,13 @@ def query_terminal(timeout: float = 0.5) -> tuple[bool, tuple[float, float] | No
 
         fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
     except ImportError, OSError:
-        return False, None
+        return False, False, None
     reply = b""
     try:
         saved = termios.tcgetattr(fd)
         try:
             tty.setcbreak(fd, termios.TCSANOW)  # no echo of the replies
-            os.write(fd, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c")
+            os.write(fd, b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Ga=q,i=32,e=T,U=1\x1b\\\x1b[16t\x1b[c")
             deadline = time.monotonic() + timeout
             while not _DA1_RX.search(reply):
                 left = deadline - time.monotonic()
@@ -96,9 +146,14 @@ def query_terminal(timeout: float = 0.5) -> tuple[bool, tuple[float, float] | No
     finally:
         os.close(fd)
     cell = _CELL_RX.search(reply)
-    return b"\x1b_Gi=31;OK" in reply, (int(cell[2]), int(cell[1])) if cell and int(cell[1]) and int(cell[2]) else None
+    return (
+        b"\x1b_Gi=31;OK" in reply,
+        bool(_PLACEHOLDERS_RX.search(reply)),
+        (int(cell[2]), int(cell[1])) if cell and int(cell[1]) and int(cell[2]) else None,
+    )
 
 
+_PLACEHOLDERS_RX = re.compile(rb"\x1b_Gi=32,[^;\x1b]*U=1[^;\x1b]*;OK")
 _DA1_RX = re.compile(rb"\x1b\[\?[\d;]*c")
 _CELL_RX = re.compile(rb"\x1b\[6;(\d+);(\d+)t")
 
@@ -141,13 +196,80 @@ def encode(data: bytes, max_width: int | None = None) -> tuple[str, bytes]:
 
 def escape(keys: str, payload: bytes, cols: int, rows: int) -> str:
     """Draw an encoded image at the cursor over ``cols``×``rows`` cells, leaving the cursor in place."""
+    return _command(f"a=T,{keys},c={cols},r={rows},C=1,q=2", payload)
+
+
+def upload(keys: str, payload: bytes, image_id: int, cols: int = 0, rows: int = 0) -> str:
+    """Transmit an image under ``image_id`` without showing it. With ``cols``×``rows`` it also gets
+    the virtual placement that Unicode placeholder cells (``placeholder_row``) draw."""
+    action = f"a=T,U=1,c={cols},r={rows}" if cols else "a=t"
+    return _command(f"{action},i={image_id},{keys},q=2", payload)
+
+
+def placement(image_id: int, cols: int, rows: int, y: int, height: int) -> str:
+    """Show pixel rows ``y`` to ``y + height`` of an uploaded image at the cursor over ``cols``×``rows``
+    cells (the pager's fallback where placeholders are not supported)."""
+    return _command(f"a=p,i={image_id},p=1,y={y},h={height},c={cols},r={rows},C=1,q=2")
+
+
+def delete(image_id: int, free: bool = False) -> str:
+    """Remove an image's placements from the screen, and with ``free`` its data too."""
+    return _command(f"a=d,d={'I' if free else 'i'},i={image_id},q=2")
+
+
+def _command(keys: str, payload: bytes = b"") -> str:
+    """A kitty graphics command, the payload split in chunks; inside tmux each chunk goes through
+    its passthrough (``allow-passthrough on``) to the outer terminal."""
     encoded = base64.standard_b64encode(payload).decode()
     chunks = [encoded[i : i + 4096] for i in range(0, len(encoded), 4096)] or [""]
     out = []
     for n, chunk in enumerate(chunks):
-        head = f"a=T,{keys},c={cols},r={rows},C=1,q=2," if n == 0 else ""
-        out.append(f"\x1b_G{head}m={int(n < len(chunks) - 1)};{chunk}\x1b\\")
+        head = f"{keys},m={int(n < len(chunks) - 1)}" if n == 0 else f"m={int(n < len(chunks) - 1)}"
+        sequence = f"\x1b_G{head};{chunk}\x1b\\" if chunk else f"\x1b_G{head}\x1b\\"
+        if os.environ.get("TMUX"):
+            sequence = "\x1bPtmux;" + sequence.replace("\x1b", "\x1b\x1b") + "\x1b\\"
+        out.append(sequence)
     return "".join(out)
+
+
+# Unicode placeholders: each cell is U+10EEEE with diacritics for its row, its column and the image
+# ID's high byte; the low byte is the 256-color foreground (which tmux passes through unchanged).
+PLACEHOLDER = "\U0010eeee"
+_DIACRITIC_RANGES = (
+    (0x305, 0x305), (0x30D, 0x30E), (0x310, 0x310), (0x312, 0x312), (0x33D, 0x33F), (0x346, 0x346),
+    (0x34A, 0x34C), (0x350, 0x352), (0x357, 0x357), (0x35B, 0x35B), (0x363, 0x36F), (0x483, 0x487),
+    (0x592, 0x595), (0x597, 0x599), (0x59C, 0x5A1), (0x5A8, 0x5A9), (0x5AB, 0x5AC), (0x5AF, 0x5AF),
+    (0x5C4, 0x5C4), (0x610, 0x617), (0x657, 0x65B), (0x65D, 0x65E), (0x6D6, 0x6DC), (0x6DF, 0x6E2),
+    (0x6E4, 0x6E4), (0x6E7, 0x6E8), (0x6EB, 0x6EC), (0x730, 0x730), (0x732, 0x733), (0x735, 0x736),
+    (0x73A, 0x73A), (0x73D, 0x73D), (0x73F, 0x741), (0x743, 0x743), (0x745, 0x745), (0x747, 0x747),
+    (0x749, 0x74A), (0x7EB, 0x7F1), (0x7F3, 0x7F3), (0x816, 0x819), (0x81B, 0x823), (0x825, 0x827),
+    (0x829, 0x82D), (0x951, 0x951), (0x953, 0x954), (0xF82, 0xF83), (0xF86, 0xF87), (0x135D, 0x135F),
+    (0x17DD, 0x17DD), (0x193A, 0x193A), (0x1A17, 0x1A17), (0x1A75, 0x1A7C), (0x1B6B, 0x1B6B),
+    (0x1B6D, 0x1B73), (0x1CD0, 0x1CD2), (0x1CDA, 0x1CDB), (0x1CE0, 0x1CE0), (0x1DC0, 0x1DC1),
+    (0x1DC3, 0x1DC9), (0x1DCB, 0x1DCC), (0x1DD1, 0x1DE6), (0x1DFE, 0x1DFE), (0x20D0, 0x20D1),
+    (0x20D4, 0x20D7), (0x20DB, 0x20DC), (0x20E1, 0x20E1), (0x20E7, 0x20E7), (0x20E9, 0x20E9),
+    (0x20F0, 0x20F0), (0x2CEF, 0x2CF1), (0x2DE0, 0x2DFF), (0xA66F, 0xA66F), (0xA67C, 0xA67D),
+    (0xA6F0, 0xA6F1), (0xA8E0, 0xA8F1), (0xAAB0, 0xAAB0), (0xAAB2, 0xAAB3), (0xAAB7, 0xAAB8),
+    (0xAABE, 0xAABF), (0xAAC1, 0xAAC1), (0xFE20, 0xFE26), (0x10A0F, 0x10A0F), (0x10A38, 0x10A38),
+    (0x1D185, 0x1D189), (0x1D1AA, 0x1D1AD), (0x1D242, 0x1D244),
+)  # fmt: skip
+DIACRITICS = "".join(chr(c) for low, high in _DIACRITIC_RANGES for c in range(low, high + 1))  # kitty's table
+_SESSION = random.randint(1, 255)  # high byte of this run's image IDs, so they don't clash with earlier runs
+
+
+MAX_IMAGES = 240
+
+
+def image_id(n: int) -> int:
+    """The ID of an article's ``n``-th image (1 to ``MAX_IMAGES``). Its low byte is a 256-color
+    index above the 16 basic colors, which tmux could rewrite to other escapes."""
+    return _SESSION << 24 | (n + 15)
+
+
+def placeholder_row(image_id: int, row: int, cols: int) -> str:
+    """Text drawing row ``row`` of an image's virtual placement, ``cols`` cells wide."""
+    cells = "".join(PLACEHOLDER + DIACRITICS[row] + DIACRITICS[col] + DIACRITICS[image_id >> 24] for col in range(cols))
+    return f"\x1b[38;5;{image_id & 255}m{cells}\x1b[0m"
 
 
 class Loader:

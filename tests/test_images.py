@@ -34,8 +34,13 @@ def test_decode_interlaced_gif_matches_reference():
 @pytest.mark.parametrize(
     ("reply", "expected"),
     [
-        (b"\x1b_Gi=31;OK\x1b\\\x1b[6;20;9t\x1b[?62;4c", (True, (9, 20))),  # kitty-like terminal
-        (b"\x1b[?62;22c", (False, None)),  # answers device attributes only: no graphics
+        (b"\x1b_Gi=31;OK\x1b\\\x1b[6;20;9t\x1b[?62;4c", (True, False, (9, 20))),  # kitty graphics only
+        (  # kitty 0.50+ also confirms Unicode placeholders
+            b"\x1b_Gi=31;OK\x1b\\\x1b_Gi=32,e=T,U=1;OK\x1b\\\x1b[6;20;9t\x1b[?62;4c",
+            (True, True, (9, 20)),
+        ),
+        (b"\x1b_Gi=31;OK\x1b\\\x1b_Gi=32;EINVAL:bad\x1b\\\x1b[?62;4c", (True, False, None)),  # no feature query
+        (b"\x1b[?62;22c", (False, False, None)),  # answers device attributes only: no graphics
     ],
 )
 def test_query_terminal_reads_the_terminal_reply(reply, expected):
@@ -59,3 +64,19 @@ def test_query_terminal_reads_the_terminal_reply(reply, expected):
     out, _ = proc.communicate(timeout=10)
     os.close(primary)
     assert out.decode().strip() == repr(expected)
+
+
+def test_placeholder_cells_encode_row_column_and_image_id():
+    # kitty's spec: "\e[38;5;42m\U10EEEE\U0305\U0305\U030E" is row 0, column 0 of image 42 + (2 << 24)
+    row = images.placeholder_row(42 + (2 << 24), 1, 2)
+    assert row == "\x1b[38;5;42m\U0010eeee\u030d\u0305\u030e\U0010eeee\u030d\u030d\u030e\x1b[0m"
+    assert len(images.DIACRITICS) == 297 and images.DIACRITICS[-1] == "\U0001d244"  # the full table
+
+
+def test_graphics_go_through_tmux_passthrough(monkeypatch):
+    monkeypatch.delenv("TMUX", raising=False)
+    plain = images.upload("f=100", b"png", 7, cols=3, rows=2)
+    assert plain == "\x1b_Ga=T,U=1,c=3,r=2,i=7,f=100,q=2,m=0;cG5n\x1b\\"
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    wrapped = images.upload("f=100", b"png", 7, cols=3, rows=2)
+    assert wrapped == "\x1bPtmux;\x1b" + plain.replace("\x1b\\", "\x1b\x1b\\") + "\x1b\\"

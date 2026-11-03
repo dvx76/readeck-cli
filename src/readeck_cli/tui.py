@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import os
 import select
-import shutil
-import subprocess
 import sys
 import webbrowser
 from typing import Any
 
-from readeck_cli import images, pretty, reader
+from readeck_cli import pretty, reader
 from readeck_cli.api import Api, CliError
 
 try:
@@ -45,7 +43,9 @@ KEYS = {
     b"\x15": "clear",  # ctrl-u
     b"\x12": "read",  # ctrl-r
     b"\x0f": "open",  # ctrl-o
-    b"\x1b": "quit",
+    b"\t": "tab",
+    b"\x1b[Z": "backtab",  # shift-tab
+    b"\x1b": "escape",
     b"\x03": "quit",  # ctrl-c
     b"\x04": "quit",  # ctrl-d
 }
@@ -193,7 +193,7 @@ class Browser:
             self.move(delta)
         elif key == "enter" and self.current():
             return "select"
-        elif key == "quit":
+        elif key in ("quit", "escape"):
             return "quit"
         return key if key in ("read", "open") and self.current() else None
 
@@ -225,18 +225,8 @@ def browse(bookmarks: list[dict[str, Any]], total: int, filters: str, api: Api) 
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
 
     def read(markdown: str, bookmark: dict[str, Any]) -> None:
-        """Show an article like ``readeck read``: printed on the main screen with its images, back
-        to the picker on a key. Terminals without inline images get it in $PAGER instead."""
-        if images.graphics_supported(out):
-            with os.fdopen(os.dup(out), "w", encoding="utf-8") as stream:
-                reader.show(markdown, bookmark, api, stream)
-            write("\n " + pretty.Term(color=True).s("↩ any key: back to browse", pretty.MUTED) + "\x1b[?25l")
-            tty.setcbreak(fd, termios.TCSANOW)
-            os.read(fd, 4096)
-            return
-        view = reader.render(markdown, bookmark, pretty.Term(width=os.get_terminal_size(out).columns, color=True))
-        pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less") else "more")
-        subprocess.run(pager, shell=True, input="\n".join(view).encode(), stdout=out, check=False)
+        """Show an article in ``readeck read``'s pager; ``q`` comes back to the picker."""
+        reader.show(markdown, bookmark, api, out=out, keys=fd, paging="always")
 
     try:
         enter()

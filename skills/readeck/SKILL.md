@@ -79,7 +79,9 @@ Search filters (all combinable, AND semantics): `-q`, `--since`/`--until` (accep
 ## Notes
 
 - `read` prints raw Markdown whenever stdout is not a terminal or with `-o json`/`--raw`; on a
-  terminal it renders the article for humans (colors, inline images), which is not what you want.
+  terminal it renders the article for humans (colors, inline images) and opens long articles in
+  an interactive pager that waits for keys (`q` quits). That is never what you want: always pass
+  `-o json` (or `--raw`). `--no-pager` prints the rendered view without paging.
 - `readeck browse` is an interactive full-screen picker for humans; never run it (it needs a
   terminal and exits 2 without one). Use `search` instead.
 - Read-only: the CLI cannot save, edit, archive, or delete bookmarks. If the user asks for that,
