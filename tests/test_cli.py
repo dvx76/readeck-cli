@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from conftest import ARTICLE_MD, BM1, base_env, run_cli
+from conftest import ARTICLE_MD, BM1, TOKEN, base_env, run_cli
 
 
 def test_search_json_and_params(run, stub):
@@ -124,3 +126,26 @@ def test_bad_limit_exits_2(run):
 def test_version(run):
     proc = run("--version")
     assert proc.stdout.strip().startswith("readeck ")
+
+
+def test_cross_origin_redirect_does_not_leak_token(run, stub):
+    class Redirect(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # noqa: ARG002 - silence request logging
+            pass
+
+        def do_GET(self):  # noqa: N802 - stdlib naming
+            self.send_response(302)
+            self.send_header("Location", stub.url + self.path)  # same host, different port
+            self.end_headers()
+
+    server = HTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        proc = run("info", env_extra={"READECK_URL": url}, expect_ok=False)
+    finally:
+        server.shutdown()
+    assert stub.queries == []  # the stub only records requests carrying the bearer token
+    assert proc.returncode == 1
+    assert f"different origin: {stub.url}/api/info" in proc.stderr
+    assert TOKEN not in proc.stderr

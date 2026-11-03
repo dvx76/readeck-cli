@@ -29,6 +29,23 @@ def fail(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme, parts.hostname, parts.port or {"http": 80, "https": 443}.get(parts.scheme)
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only within the same origin, so the bearer token never leaves it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _origin(newurl) != _origin(req.full_url):
+            raise CliError(
+                f"Readeck at {req.full_url} redirected ({code}) to a different origin: {newurl}; "
+                "refusing to follow it with the API token (check READECK_URL and your reverse proxy)"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class Api:
     """Minimal Readeck API client using the ``/api`` endpoints."""
 
@@ -40,6 +57,9 @@ class Api:
         if insecure:
             self.ssl_context.check_hostname = False
             self.ssl_context.verify_mode = ssl.CERT_NONE
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=self.ssl_context), _SameOriginRedirectHandler
+        )
 
     def request(
         self,
@@ -58,7 +78,7 @@ class Api:
         req.add_header("Accept", accept)
         req.add_header("User-Agent", USER_AGENT)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout, context=self.ssl_context) as resp:
+            with self.opener.open(req, timeout=self.timeout) as resp:
                 return resp.headers, resp.read()
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")[:300].strip()
